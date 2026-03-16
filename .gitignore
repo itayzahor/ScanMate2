@@ -1,0 +1,20 @@
+# venv
+ML/.venv/
+
+ML/data/
+
+ML/configs/
+ML/outputs/
+
+# large weights (both base and trained)
+ML/yolov8n.pt
+ML/yolov8n-pose.pt
+ML/**/*.pt
+
+#server
+node_modules
+.env
+.DS_Store
+ML/runs/*/
+ML/runs/runs.zip
+ML/engines/*/
