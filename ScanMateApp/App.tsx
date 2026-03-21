@@ -1,9 +1,9 @@
 // App.tsx
 
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {ActivityIndicator, Text, View, StyleSheet} from 'react-native';
 import {GestureHandlerRootView} from 'react-native-gesture-handler';
-import {NavigationContainer} from '@react-navigation/native';
+import {NavigationContainer, NavigationContainerRef} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {useCameraPermission} from 'react-native-vision-camera';
 
@@ -14,16 +14,26 @@ import {ResultScreen} from './src/app/screens/ResultScreen';
 import AnalysisScreen from './src/app/screens/Analysis';
 import {ScanGame} from './src/app/screens/ScanGame';
 import {GameReview} from './src/app/screens/GameReview';
+import {ProfileScreen} from './src/app/screens/ProfileScreen';
+import {GameLibraryScreen} from './src/app/screens/GameLibraryScreen';
+import {FriendsScreen} from './src/app/screens/FriendsScreen';
+import {FriendGameScreen} from './src/app/screens/FriendGameScreen';
 import type {GameSnapshot} from './src/shared/types/game';
+import {AuthProvider} from './src/app/context/AuthContext';
+import {SocketProvider, setNavigationRef} from './src/app/context/SocketContext';
 
 // This defines all your screens and what parameters they take
 export type RootStackParamList = {
-  Main: undefined; // Main screen takes no parameters
-  ScanBoard: undefined; // ScanBoard screen takes no parameters
-  ScanGame: undefined;
-  Result: { photoPath: string }; // Result screen takes a photoPath parameter
-  Analysis: { fen: string }; // Analysis screen shows the resulting FEN
-  GameReview: { snapshots: GameSnapshot[]; moves?: string[] };
+  Main: undefined;
+  ScanBoard: undefined;
+  ScanGame: { startingFen?: string } | undefined;
+  Result: { photoPath: string };
+  Analysis: { fen: string };
+  GameReview: { snapshots: GameSnapshot[]; moves?: string[]; flipped?: boolean };
+  Profile: undefined;
+  GameLibrary: undefined;
+  Friends: { challengeFen?: string } | undefined;
+  FriendGame: { gameId: string };
 };
 
 // This tells the navigator to use that "map"
@@ -100,17 +110,38 @@ const App = () => {
         name="GameReview"
         component={GameReview}
       />
+      <Stack.Screen
+        name="Profile"
+        component={ProfileScreen}
+      />
+      <Stack.Screen
+        name="GameLibrary"
+        component={GameLibraryScreen}
+      />
+      <Stack.Screen
+        name="Friends"
+        component={FriendsScreen}
+      />
+      <Stack.Screen
+        name="FriendGame"
+        component={FriendGameScreen}
+      />
     </>
   );
 
   return (
-    <GestureHandlerRootView style={styles.appRoot}>
-      <NavigationContainer>
-        <Stack.Navigator screenOptions={{headerShown: false}}>
-          {stackScreens}
-        </Stack.Navigator>
-      </NavigationContainer>
-    </GestureHandlerRootView>
+    <AuthProvider>
+      <SocketProvider>
+        <GestureHandlerRootView style={styles.appRoot}>
+          <NavigationContainer
+            ref={(ref) => setNavigationRef(ref as NavigationContainerRef<RootStackParamList> | null)}>
+            <Stack.Navigator screenOptions={{headerShown: false}}>
+              {stackScreens}
+            </Stack.Navigator>
+          </NavigationContainer>
+        </GestureHandlerRootView>
+      </SocketProvider>
+    </AuthProvider>
   );
 };
 

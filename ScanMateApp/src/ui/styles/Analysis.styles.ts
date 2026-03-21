@@ -35,62 +35,46 @@ export const styles = StyleSheet.create({
   },
   controlsContainer: {
     width: '100%',
-    padding: 20,
+    paddingHorizontal: 16,
     marginTop: 10,
-  },
-  controlRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-    backgroundColor: '#1e1e1e',
-    padding: 15,
-    borderRadius: 10,
-  },
-  label: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  switchWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  switchLabel: {
-    color: '#555',
-    fontWeight: '600',
-  },
-  activeLabel: {
-    color: 'white',
   },
   buttonRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 8,
+    marginBottom: 10,
+  },
+  toggleLabel: {
+    color: '#777',
+    fontSize: 11,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 4,
   },
   buttonRowSpacing: {
-    marginTop: 12,
+    marginTop: 0,
   },
   actionButton: {
     flex: 1,
-    backgroundColor: '#333',
-    padding: 15,
-    borderRadius: 10,
+    backgroundColor: '#1f1f1f',
+    paddingVertical: 10,
+    borderRadius: 8,
     alignItems: 'center',
   },
   analyzeButton: {
-    backgroundColor: '#27ae60', // Green
+    backgroundColor: '#27ae60',
   },
   analyzeButtonDisabled: {
-    opacity: 0.7,
+    opacity: 0.6,
   },
   buttonText: {
-    color: 'white',
-    fontWeight: 'bold',
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 14,
   },
   analyzeText: {
-    color: 'white',
+    color: '#fff',
   },
   // Modal Styles
   modalOverlay: {

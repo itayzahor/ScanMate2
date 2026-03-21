@@ -6,7 +6,6 @@ Endpoints
 POST   /recognize_position/                Stateless: single image → FEN
 POST   /recognize_game/                    Start a game session
 POST   /recognize_game/{game_id}/frame     Send one frame during a game
-GET    /recognize_game/{game_id}/          Peek at current game state
 POST   /recognize_game/{game_id}/end       End game → full SAN move list
 DELETE /recognize_game/{game_id}/          Discard a game session
 POST   /analyze_position/                  Stockfish evaluation of a FEN
@@ -17,10 +16,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import queue
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import Optional, Union
 from uuid import uuid4
 
@@ -41,12 +43,10 @@ from scripts.detectors import get_board_corners, get_piece_predictions, PIECE_CL
 from scripts.board_orientation import get_perspective_transform, orient_board_state_for_white
 from scripts.piece_mapping import map_pieces_to_board
 from scripts.fen_converter import convert_board_to_fen
-from scripts.gatekeeper import validate_frame, HAND_DETECTED, DEFAULT_BLUR_THRESHOLD
+from scripts.gatekeeper import validate_frame, compute_budget, MotionDetector
 from scripts.board_mapper import warp_board_to_grid
 from scripts.change_tracker import resolve_move_from_changes
 from scripts.session_state import DEFAULT_STARTING_FEN, SessionState
-
-app = FastAPI(title="Chess Recognition Server")
 
 
 # ---------------------------------------------------------------------------
@@ -83,9 +83,10 @@ _STOCKFISH_PATH = _resolve_stockfish_path()
 _engine: Optional[chess.engine.SimpleEngine] = None
 
 
-@app.on_event("startup")
-def _init_engine():
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _engine
+    # Startup
     try:
         _engine = chess.engine.SimpleEngine.popen_uci(_STOCKFISH_PATH)
         info = _engine.id.get("name", "stockfish")
@@ -97,13 +98,15 @@ def _init_engine():
         print(f"[engine] Failed to start Stockfish: {exc}")
         _engine = None
 
+    yield
 
-@app.on_event("shutdown")
-def _shutdown_engine():
-    global _engine
+    # Shutdown
     if _engine is not None:
         _engine.quit()
         _engine = None
+
+
+app = FastAPI(title="Chess Recognition Server", lifespan=_lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +129,7 @@ def _run_stateless_pipeline(image_bytes: bytes) -> Optional[str]:
     if corners is None:
         return None
 
-    homography = get_perspective_transform(corners, img_resized)
+    homography, _ = get_perspective_transform(corners, img_resized)
     piece_boxes = get_piece_predictions(img_resized)
 
     board_state = map_pieces_to_board(piece_boxes, PIECE_CLASS_NAMES, homography)
@@ -168,12 +171,10 @@ async def recognize_position(file: UploadFile = File(...)):
 
 # How many consecutive "no-move" detection frames before discarding a pending move.
 _PENDING_IDLE_LIMIT = 3
-# Initial hand budget — high enough for the diff detector to warm up.
-_HAND_BUDGET_INIT = 5
-# How much budget a *new* hand appearance adds.
-_HAND_BUDGET_BOOST = 2
+# Initial budget — high enough for the diff detector to warm up.
+_BUDGET_INIT = 5
 
-_DUMP_GAME_FRAMES = os.getenv("DUMP_GAME_FRAMES", "0").lower() in {"1", "true", "yes", "on"}
+_DUMP_GAME_FRAMES = os.getenv("DUMP_GAME_FRAMES", "1").lower() in {"1", "true", "yes", "on"}
 _DUMP_GAME_FRAMES_DIR = Path(
     os.getenv(
         "DUMP_GAME_FRAMES_DIR",
@@ -194,17 +195,23 @@ class _GameSession:
     moves: list[str] = field(default_factory=list)          # confirmed SAN moves
     current_fen: str = DEFAULT_STARTING_FEN
     expected_turn: Optional[chess.Color] = None              # None = try both
-    pending_uci: Optional[str] = None
     pending_san: Optional[str] = None
     pending_idle: int = 0
     frame_count: int = 0
     created_at: float = field(default_factory=time.time)
     lock: Lock = field(default_factory=Lock)
-    # Hand-triggered pipeline budget.  When > 0 the full pipeline runs;
-    # when 0 only the gatekeeper runs (cheap).  A new hand bumps it up.
-    hand_budget: int = _HAND_BUDGET_INIT
-    hand_was_present: bool = False  # tracks whether the *previous* frame had a hand
-    mode: str = "live"  # "live" or "video"
+    # Pipeline budget.  When > 0 the full pipeline runs;
+    # when 0 only the gatekeeper runs (cheap).  Hand/motion bumps it up.
+    budget: int = _BUDGET_INIT
+    motion_detector: MotionDetector = field(default_factory=MotionDetector)
+    # Background processing queue — frames are enqueued by /frame and
+    # consumed by a dedicated worker thread.
+    frame_queue: queue.Queue = field(default_factory=queue.Queue)
+    enqueued_count: int = 0  # total frames enqueued (for numbering)
+    last_enqueue_time: float = 0.0  # monotonic timestamp of last enqueued frame
+    _worker: Optional[Thread] = field(default=None, repr=False)
+    _stop: Event = field(default_factory=Event)
+    _finished: Event = field(default_factory=Event)
 
 
 # Thread-safe registry of active games.
@@ -212,19 +219,43 @@ _games: dict[str, _GameSession] = {}
 _games_lock = Lock()
 
 
-def _normalize_starting_fen(raw_fen: Optional[str]) -> str:
-    """Validate and normalise a user-supplied FEN to board-only form."""
-    if raw_fen is None or not raw_fen.strip():
-        return DEFAULT_STARTING_FEN
-    fen = raw_fen.strip()
-    try:
-        board = chess.Board(fen)
-    except ValueError:
+def _frame_worker(game: _GameSession) -> None:
+    """Background thread that processes frames from the queue one by one."""
+    while not game._stop.is_set():
         try:
-            board = chess.Board(f"{fen} w - - 0 1")
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid starting_fen: {exc}")
-    return board.board_fen()
+            frame_data: tuple[int, bytes] = game.frame_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        frame_number, image_bytes = frame_data
+        try:
+            with game.lock:
+                result = _process_frame(game, image_bytes)
+                _dump_frame_result(game, result)
+        except Exception:
+            logging.exception("Error processing frame %d for game %s", frame_number, game.game_id)
+
+    # Drain any remaining frames after stop signal.
+    while True:
+        try:
+            frame_data = game.frame_queue.get_nowait()
+        except queue.Empty:
+            break
+        frame_number, image_bytes = frame_data
+        try:
+            with game.lock:
+                result = _process_frame(game, image_bytes)
+                _dump_frame_result(game, result)
+        except Exception:
+            logging.exception("Error processing frame %d for game %s", frame_number, game.game_id)
+
+    game._finished.set()
+
+
+def _validate_starting_fen(fen: Optional[str])  -> str:
+    """Validate a client-supplied board-only FEN."""
+    if fen is None or not fen.strip():
+        raise HTTPException(status_code=400, detail="starting_fen is required")
+    return fen.strip()
 
 
 def _compute_san(previous_fen: str, move: chess.Move, turn: chess.Color) -> str:
@@ -237,40 +268,34 @@ def _compute_san(previous_fen: str, move: chess.Move, turn: chess.Color) -> str:
         return move.uci()
 
 
-def _dump_received_frame(game: _GameSession, image_bytes: bytes) -> None:
+def _dump_received_frame(game: _GameSession, image_bytes: bytes, frame_index: int) -> None:
     """Persist incoming frame bytes for visual debugging/comparison."""
     if not _DUMP_GAME_FRAMES:
         return
 
-    frame_index = game.frame_count + 1
     game_dir = _DUMP_GAME_FRAMES_DIR / game.game_id
     game_dir.mkdir(parents=True, exist_ok=True)
 
-    upload_path = game_dir / f"frame_{frame_index:05d}_upload.jpg"
-    upload_path.write_bytes(image_bytes)
+    (game_dir / f"frame_{frame_index:05d}.jpg").write_bytes(image_bytes)
 
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img is None:
-        (game_dir / f"frame_{frame_index:05d}_meta.txt").write_text(
-            f"decode=failed\nbytes={len(image_bytes)}\n",
-            encoding="utf-8",
-        )
+
+def _dump_frame_result(game: _GameSession, result: dict) -> None:
+    """Save per-frame processing result as a JSON sidecar next to the frame JPEG."""
+    if not _DUMP_GAME_FRAMES:
         return
-
-    h, w = img.shape[:2]
-    model_input = cv2.resize(img, (IMAGE_SIZE, IMAGE_SIZE))
-    model_path = game_dir / f"frame_{frame_index:05d}_model_{IMAGE_SIZE}x{IMAGE_SIZE}.jpg"
-    cv2.imwrite(str(model_path), model_input, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-
-    (game_dir / f"frame_{frame_index:05d}_meta.txt").write_text(
-        f"decode=ok\nwidth={w}\nheight={h}\nbytes={len(image_bytes)}\n",
-        encoding="utf-8",
+    import json
+    frame_index = game.frame_count  # frame_count already incremented by _process_frame
+    game_dir = _DUMP_GAME_FRAMES_DIR / game.game_id
+    sidecar = {**result, "frame_index": frame_index,
+               "pending_san": game.pending_san,
+               "moves_so_far": list(game.moves)}
+    (game_dir / f"frame_{frame_index:05d}.json").write_text(
+        json.dumps(sidecar, indent=2), encoding="utf-8"
     )
 
 
 def _process_frame(game: _GameSession, image_bytes: bytes) -> dict:
-    """Run the full detection pipeline on one frame (mirrors video_viewer logic).
+    """Run the full detection pipeline on one frame.
 
     Returns a JSON-friendly dict describing what happened on this frame.
     """
@@ -285,51 +310,40 @@ def _process_frame(game: _GameSession, image_bytes: bytes) -> dict:
     game.frame_count += 1
 
     # Gatekeeper — always runs (cheap relative to YOLO).
-    # Video / replay frames are pre-compressed JPEGs with inherently lower
-    # Laplacian variance, so use a relaxed blur threshold.
-    is_video = game.mode == "video"
-    blur_th = 80.0 if is_video else DEFAULT_BLUR_THRESHOLD
-    gk = validate_frame(img_resized, blur_threshold=blur_th)
-    hand_now = gk.hand_count > 0
-
-    # Update hand budget (live mode only).
-    if not is_video:
-        if hand_now and not game.hand_was_present:
-            game.hand_budget = max(game.hand_budget, _HAND_BUDGET_BOOST)
-        game.hand_was_present = hand_now
+    gk = validate_frame(img_resized, motion_detector=game.motion_detector)
+    game.budget += compute_budget(gk)
 
     if not gk.is_valid:
-        # In video mode, only reject if blurry (not just hand)
-        if is_video:
-            only_hand = gk.issues == [HAND_DETECTED]
-            if only_hand:
-                pass  # allow through
-            else:
-                print(f"[Frame {game.frame_count}] rejected: {gk.issues} blur={gk.blur_variance:.1f}")
-                return {"status": "rejected", "fen": game.current_fen, "move_number": len(game.moves)}
-        else:
-            print(f"[Frame {game.frame_count}] rejected: {gk.issues} blur={gk.blur_variance:.1f} hands={gk.hand_count}")
-            return {"status": "rejected", "fen": game.current_fen, "move_number": len(game.moves)}
+        print(f"[Frame {game.frame_count}] rejected: {gk.issues} blur={gk.blur_variance:.1f} hands={gk.hand_count} motion={gk.motion_score:.1f}")
+        return {"status": "rejected", "fen": game.current_fen, "move_number": len(game.moves)}
 
-    # If budget is exhausted, skip the expensive pipeline (live mode only).
-    if not is_video and game.hand_budget <= 0:
+    # If budget is exhausted, skip the expensive pipeline.
+    if game.budget <= 0:
         return {"status": "skipped", "fen": game.current_fen, "move_number": len(game.moves)}
 
-    if not is_video:
-        game.hand_budget -= 1
+    game.budget -= 1
 
     # Corner detection
     corners = get_board_corners(img_resized)
     if corners is None or len(corners) != 4:
         print(f"[Frame {game.frame_count}] no board corners detected")
         return {"status": "no_board", "fen": game.current_fen, "move_number": len(game.moves)}
-
-    # Perspective transform + warp
-    h_matrix = get_perspective_transform(corners, img_resized)
-    warped = warp_board_to_grid(img_resized, h_matrix, IMAGE_SIZE)
-
+    
     # Piece detection
     piece_boxes = get_piece_predictions(img_resized)
+    if piece_boxes is None:
+        print(f"[Frame {game.frame_count}] no pieces detected")
+        return {"status": "no_pieces", "fen": game.current_fen, "move_number": len(game.moves)}
+
+    # Perspective transform + warp
+    h_matrix, oriented_corners = get_perspective_transform(corners, img_resized)
+    warped = warp_board_to_grid(img_resized, h_matrix, IMAGE_SIZE)
+
+    # Stash geometry for sidecar dump (frame_viewer uses these)
+    _frame_h_matrix = h_matrix.tolist() if hasattr(h_matrix, 'tolist') else h_matrix
+    _frame_oriented_corners = oriented_corners.tolist()
+
+    # Map pieces to board
     board_state = map_pieces_to_board(piece_boxes, PIECE_CLASS_NAMES, h_matrix)
     board_oriented = orient_board_state_for_white(board_state)
 
@@ -351,9 +365,9 @@ def _process_frame(game: _GameSession, image_bytes: bytes) -> dict:
     if change and change.triggered_count > 0:
         top3 = change.triggered[:3]
         top3_str = ", ".join(f"{t.square}={t.magnitude:.1f}" for t in top3)
-        print(f"[Frame {game.frame_count}] change.ready={change.ready} triggered={change.triggered_count} [{top3_str}] pending={game.pending_uci}")
+        print(f"[Frame {game.frame_count}] change.ready={change.ready} triggered={change.triggered_count} [{top3_str}] pending={game.pending_san}")
     else:
-        print(f"[Frame {game.frame_count}] change.ready={change.ready if change else None} triggered={change.triggered_count if change else None} pending={game.pending_uci}")
+        print(f"[Frame {game.frame_count}] change.ready={change.ready if change else None} triggered={change.triggered_count if change else None} pending={game.pending_san}")
 
     move_san: Optional[str] = None
 
@@ -361,10 +375,10 @@ def _process_frame(game: _GameSession, image_bytes: bytes) -> dict:
         if not change.ready:
             pass  # diff detector still warming up
 
-        elif change.triggered_count == 0 and game.pending_uci is None:
+        elif change.triggered_count == 0 and game.pending_san is None:
             pass  # board is quiet, nothing pending
 
-        elif change.triggered_count == 0 and game.pending_uci is not None:
+        elif change.triggered_count == 0 and game.pending_san is not None:
             # Quiet board + pending move → try to confirm via YOLO agreement
             res = resolve_move_from_changes(
                 previous_fen=previous_fen,
@@ -372,20 +386,25 @@ def _process_frame(game: _GameSession, image_bytes: bytes) -> dict:
                 current_piece_squares=current_piece_squares,
                 expected_turn=game.expected_turn,
             )
-            if res and res.uci == game.pending_uci:
-                # YOLO still agrees → CONFIRM
-                move_san = game.pending_san or res.move.uci()
-                game.current_fen = res.fen
-                game.expected_turn = chess.BLACK if res.turn == chess.WHITE else chess.WHITE
-                game.moves.append(move_san)
-                session.set_piece_squares(current_piece_squares)
-                game.pending_uci = None
-                game.pending_san = None
-                game.pending_idle = 0
+            if res:
+                confirm_san = _compute_san(previous_fen, res.move, res.turn)
+                if confirm_san == game.pending_san:
+                    # YOLO still agrees → CONFIRM
+                    move_san = game.pending_san
+                    game.current_fen = res.fen
+                    game.expected_turn = chess.BLACK if res.turn == chess.WHITE else chess.WHITE
+                    game.moves.append(move_san)
+                    session.set_piece_squares(current_piece_squares)
+                    game.pending_san = None
+                    game.pending_idle = 0
+                else:
+                    game.pending_idle += 1
+                    if game.pending_idle >= _PENDING_IDLE_LIMIT:
+                        game.pending_san = None
+                        game.pending_idle = 0
             else:
                 game.pending_idle += 1
                 if game.pending_idle >= _PENDING_IDLE_LIMIT:
-                    game.pending_uci = None
                     game.pending_san = None
                     game.pending_idle = 0
 
@@ -400,42 +419,41 @@ def _process_frame(game: _GameSession, image_bytes: bytes) -> dict:
             if res:
                 candidate_san = _compute_san(previous_fen, res.move, res.turn)
 
-                if game.pending_uci and res.uci == game.pending_uci:
+                if game.pending_san and candidate_san == game.pending_san:
                     # Same move seen again → CONFIRM
                     move_san = candidate_san
                     game.current_fen = res.fen
                     game.expected_turn = chess.BLACK if res.turn == chess.WHITE else chess.WHITE
                     game.moves.append(move_san)
                     session.set_piece_squares(current_piece_squares)
-                    game.pending_uci = None
                     game.pending_san = None
                     game.pending_idle = 0
                 else:
                     # New / different move → store as pending (not committed yet)
-                    game.pending_uci = res.uci
                     game.pending_san = candidate_san
                     game.pending_idle = 0
             else:
-                if game.pending_uci is not None:
+                if game.pending_san is not None:
                     game.pending_idle += 1
                     if game.pending_idle >= _PENDING_IDLE_LIMIT:
-                        game.pending_uci = None
                         game.pending_san = None
                         game.pending_idle = 0
 
     if game.current_fen:
         session.update_last_fen(game.current_fen)
 
-    # Build response
+    # Build response for debug
     result: dict = {
         "status": "move_detected" if move_san else "ok",
         "fen": game.current_fen,
         "move_number": len(game.moves),
+        "oriented_corners": _frame_oriented_corners,
+        "h_matrix": _frame_h_matrix,
     }
     if move_san:
         result["move"] = move_san
-    if game.pending_uci:
-        result["pending"] = game.pending_san or game.pending_uci
+    if game.pending_san:
+        result["pending"] = game.pending_san
     return result
 
 
@@ -445,32 +463,10 @@ class GameStartRequest(BaseModel):
     starting_fen: Optional[str] = Field(
         None, description="Custom starting position (board-only or full FEN). Defaults to standard."
     )
-    mode: Optional[str] = Field(
-        "live", description="'live' for camera stream, 'video' for uploaded video."
-    )
-
 
 class GameStartResponse(BaseModel):
     status: str
     game_id: str
-    starting_fen: str
-
-
-class GameFrameResponse(BaseModel):
-    status: str
-    fen: str
-    move_number: int
-    move: Optional[str] = None
-    pending: Optional[str] = None
-
-
-class GameStateResponse(BaseModel):
-    game_id: str
-    starting_fen: str
-    current_fen: str
-    move_count: int
-    moves: list[str]
-    frame_count: int
 
 
 class GameEndResponse(BaseModel):
@@ -478,7 +474,6 @@ class GameEndResponse(BaseModel):
     game_id: str
     moves: list[str]
     move_count: int
-    final_fen: str
 
 
 # --- Endpoints ---
@@ -486,31 +481,43 @@ class GameEndResponse(BaseModel):
 @app.post("/recognize_game/", response_model=GameStartResponse)
 async def start_game(payload: GameStartRequest):
     """Create a new game session and return its id."""
-    starting_fen = _normalize_starting_fen(payload.starting_fen)
+    starting_fen = _validate_starting_fen(payload.starting_fen)
     game_id = uuid4().hex[:12]
 
     session = SessionState(starting_fen=starting_fen)
-    game = _GameSession(game_id=game_id, session=session, current_fen=starting_fen,
-                        mode=payload.mode or "live")
+    game = _GameSession(game_id=game_id, session=session, current_fen=starting_fen)
 
     with _games_lock:
         _games[game_id] = game
 
+
+    # Debug
     if _DUMP_GAME_FRAMES:
+        # Clear previous game dumps so only the latest game remains.
+        import shutil
+        for child in _DUMP_GAME_FRAMES_DIR.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+
         game_dir = _DUMP_GAME_FRAMES_DIR / game_id
         game_dir.mkdir(parents=True, exist_ok=True)
         (game_dir / "session_meta.txt").write_text(
-            f"game_id={game_id}\nmode={game.mode}\nstarting_fen={starting_fen}\n",
+            f"game_id={game_id}\nstarting_fen={starting_fen}\n",
             encoding="utf-8",
         )
         logger.info("Created game frame dump dir: %s", game_dir)
 
-    return GameStartResponse(status="created", game_id=game_id, starting_fen=starting_fen)
+    # Start background worker thread for frame processing.
+    worker = Thread(target=_frame_worker, args=(game,), daemon=True)
+    game._worker = worker
+    worker.start()
+
+    return GameStartResponse(status="created", game_id=game_id)
 
 
-@app.post("/recognize_game/{game_id}/frame", response_model=GameFrameResponse)
+@app.post("/recognize_game/{game_id}/frame")
 async def submit_frame(game_id: str, file: UploadFile = File(...)):
-    """Submit one frame to an active game. Returns per-frame detection result."""
+    """Enqueue a frame for background processing."""
     with _games_lock:
         game = _games.get(game_id)
     if game is None:
@@ -518,55 +525,67 @@ async def submit_frame(game_id: str, file: UploadFile = File(...)):
 
     image_bytes = await file.read()
 
-    try:
-        with game.lock:
-            _dump_received_frame(game, image_bytes)
-            result = _process_frame(game, image_bytes)
-    except Exception:
-        logging.exception("Error processing frame %d for game %s", game.frame_count, game_id)
-        return GameFrameResponse(status="error", fen=game.current_fen, move_number=len(game.moves))
+    with game.lock:
+        game.enqueued_count += 1
+        frame_number = game.enqueued_count
+        now = time.monotonic()
+        delta_ms = (now - game.last_enqueue_time) * 1000 if game.last_enqueue_time else 0
+        game.last_enqueue_time = now
+        _dump_received_frame(game, image_bytes, frame_number)
 
-    return GameFrameResponse(**result)
+    game.frame_queue.put((frame_number, image_bytes))
+    print(f"[recv #{frame_number}] delta={delta_ms:.0f}ms  qsize={game.frame_queue.qsize()}")
+
+    return JSONResponse(content={"status": "stored", "frame_number": frame_number})
 
 
-@app.get("/recognize_game/{game_id}/", response_model=GameStateResponse)
-async def get_game_state(game_id: str):
-    """Peek at the current state of an active game."""
+@app.post("/recognize_game/{game_id}/end", response_model=GameEndResponse)
+async def end_game(game_id: str):
+    """Signal end-of-game, wait for remaining frames to be processed, return moves."""
     with _games_lock:
         game = _games.get(game_id)
     if game is None:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    return GameStateResponse(
-        game_id=game.game_id,
-        starting_fen=game.session.starting_fen or DEFAULT_STARTING_FEN,
-        current_fen=game.current_fen,
-        move_count=len(game.moves),
-        moves=list(game.moves),
-        frame_count=game.frame_count,
-    )
+    print(f"[endGame] Stopping worker for game {game_id}, ~{game.frame_queue.qsize()} frames queued")
 
+    def _wait():
+        # Signal the worker to stop after draining the queue.
+        game._stop.set()
+        game._finished.wait(timeout=600)  # generous timeout
 
-@app.post("/recognize_game/{game_id}/end", response_model=GameEndResponse)
-async def end_game(game_id: str):
-    """End a game and return the full move list. Removes the session."""
+        # Auto-confirm any pending move so the last detected move isn't lost.
+        if game.pending_san:
+            game.moves.append(game.pending_san)
+            print(f"[endGame] Auto-confirmed pending move: {game.pending_san}")
+
+    await asyncio.to_thread(_wait)
+
+    # Remove session from registry.
     with _games_lock:
-        game = _games.pop(game_id, None)
-    if game is None:
-        raise HTTPException(status_code=404, detail="Game not found")
+        _games.pop(game_id, None)
 
-    # Auto-confirm any pending move so the last detected move isn't lost.
-    if game.pending_san:
-        game.moves.append(game.pending_san)
-        print(f"[endGame] Auto-confirmed pending move: {game.pending_san}")
+    print(f"[endGame] Completed game {game_id}: {len(game.moves)} moves detected")
 
     return GameEndResponse(
         status="completed",
         game_id=game_id,
         moves=list(game.moves),
         move_count=len(game.moves),
-        final_fen=game.current_fen,
     )
+
+
+@app.get("/recognize_game/{game_id}/status")
+async def game_status(game_id: str):
+    """Lightweight progress query for the client loading screen."""
+    with _games_lock:
+        game = _games.get(game_id)
+    if game is None:
+        raise HTTPException(status_code=404, detail="Game not found")
+    return JSONResponse(content={
+        "enqueued": game.enqueued_count,
+        "processed": game.frame_count,
+    })
 
 
 @app.delete("/recognize_game/{game_id}/")
@@ -576,6 +595,8 @@ async def discard_game(game_id: str):
         game = _games.pop(game_id, None)
     if game is None:
         raise HTTPException(status_code=404, detail="Game not found")
+    # Stop the background worker.
+    game._stop.set()
     return JSONResponse(content={"status": "discarded", "game_id": game_id})
 
 

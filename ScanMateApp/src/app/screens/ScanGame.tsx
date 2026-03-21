@@ -7,27 +7,25 @@ import {
   TouchableOpacity,
   View,
   StyleSheet,
-  Image,
 } from 'react-native';
 import { Camera, useCameraDevice, useCameraFormat } from 'react-native-vision-camera';
 import { useIsFocused } from '@react-navigation/native';
 import ImageEditor from '@react-native-community/image-editor';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import RNFS from 'react-native-fs';
 import { Chess } from 'chess.js';
 
 import { styles } from '../../ui/styles/ScanBoard.styles';
 import type { RootStackParamList } from '../../../App';
 import { ScreenHeader } from '../../ui/components/ScreenHeader';
 import { getBoardSize, HEADER_HEIGHT } from '../../shared/constants/layout';
-import { startGame, sendGameFrame, endGame, discardGame } from '../../services/api';
+import { startGame, sendGameFrame, endGame, discardGame, getGameStatus } from '../../services/api';
 import type { GameSnapshot } from '../../shared/types/game';
-import { STARTING_FEN, normalizeFen } from '../../shared/utils/fen';
+import { STARTING_FEN, STARTING_BOARD_FEN, normalizeFen } from '../../shared/utils/fen';
 
 const BOARD_TOP_GAP = 24;
-const CAPTURE_INTERVAL_MS = 1000;
-const REPLAY_FRAME_DELAY_MS = 120;
-const REPLAY_FRAMES_DIR = `${RNFS.DocumentDirectoryPath}/replay_frames`;
+const CAPTURE_INTERVAL_MS = 125;
+const BURST_INTERVAL_MS = 40;
+const BURST_COUNT = 5;
 const RECORD_TIPS = [
   'Mount the phone so the board stays centered',
   'Keep hands outside the green frame between moves',
@@ -36,7 +34,7 @@ const RECORD_TIPS = [
 
 type ScanGameProps = NativeStackScreenProps<RootStackParamList, 'ScanGame'>;
 
-type CaptureState = 'idle' | 'recording' | 'uploading_video';
+type CaptureState = 'idle' | 'recording' | 'processing';
 
 function movesToSnapshots(moves: string[], fen: string): GameSnapshot[] {
   const chess = new Chess(normalizeFen(fen));
@@ -48,7 +46,7 @@ function movesToSnapshots(moves: string[], fen: string): GameSnapshot[] {
   return snapshots;
 }
 
-export const ScanGame = ({ navigation }: ScanGameProps) => {
+export const ScanGame = ({ navigation, route }: ScanGameProps) => {
   const device = useCameraDevice('back');
   const cameraRef = useRef<Camera>(null);
   const isScreenFocused = useIsFocused();
@@ -59,17 +57,19 @@ export const ScanGame = ({ navigation }: ScanGameProps) => {
   const overlayTopPx = HEADER_HEIGHT + BOARD_TOP_GAP;
   const boardOffsetX = (windowWidth - boardSize) / 2;
 
+  const customFen = route.params?.startingFen;
+  const boardFen = customFen ? customFen.split(' ')[0] : STARTING_BOARD_FEN;
+
   const [captureState, setCaptureState] = useState<CaptureState>('idle');
   const captureStateRef = useRef<CaptureState>('idle');
-  const [moveCount, setMoveCount] = useState(0);
-  const [videoProgress, setVideoProgress] = useState<{ current: number; total: number } | null>(null);
+  const [frameCount, setFrameCount] = useState(0);
+  const [progress, setProgress] = useState<{ enqueued: number; processed: number } | null>(null);
   const gameIdRef = useRef<string | null>(null);
-  const movesRef = useRef<string[]>([]);
   const startingFenRef = useRef<string>(STARTING_FEN);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cancelledRef = useRef(false);
-  const reviewOnStopRef = useRef(false);
   const isProcessingRef = useRef(false);
+  const burstRef = useRef(BURST_COUNT);
+  const sentCountRef = useRef(0);
 
   const setCaptureStateSafe = useCallback((next: CaptureState) => {
     captureStateRef.current = next;
@@ -98,12 +98,24 @@ export const ScanGame = ({ navigation }: ScanGameProps) => {
     }
 
     try {
+      setCaptureStateSafe('processing');
+      setProgress(null);
+
+      // Poll progress while endGame awaits server drain.
+      const pollId = setInterval(async () => {
+        try {
+          const s = await getGameStatus(gameId);
+          setProgress({ enqueued: s.enqueued, processed: s.processed });
+        } catch { /* game may already be gone */ }
+      }, 400);
+
       const result = await endGame(gameId);
+      clearInterval(pollId);
+
       console.log('[ScanGame] endGame result:', JSON.stringify(result));
-      console.log('[ScanGame] movesRef had:', movesRef.current.length, 'moves');
       gameIdRef.current = null;
       setCaptureStateSafe('idle');
-      setVideoProgress(null);
+      setProgress(null);
 
       if (navigateToReview && result.moves.length > 0) {
         const snapshots = movesToSnapshots(result.moves, startingFenRef.current);
@@ -115,53 +127,51 @@ export const ScanGame = ({ navigation }: ScanGameProps) => {
       console.error('[ScanGame] endGame failed', error);
       gameIdRef.current = null;
       setCaptureStateSafe('idle');
-      setVideoProgress(null);
+      setProgress(null);
     }
   }, [clearTimer, navigation, setCaptureStateSafe]);
 
-  const stopGame = useCallback(() => {
-    clearTimer();
-    cancelledRef.current = true;
-    reviewOnStopRef.current = true;
-    // The upload loop will see the flags and call finishGame after the in-flight frame completes
-  }, [clearTimer]);
-
   const cancelGame = useCallback(async () => {
     clearTimer();
-    cancelledRef.current = true;
-    reviewOnStopRef.current = false;
     const gameId = gameIdRef.current;
     if (gameId) {
       try { await discardGame(gameId); } catch {}
       gameIdRef.current = null;
     }
     setCaptureStateSafe('idle');
-    setVideoProgress(null);
-    setMoveCount(0);
+    setFrameCount(0);
   }, [clearTimer, setCaptureStateSafe]);
 
   // --- Live Recording ---
 
   const captureFrame = useCallback(async () => {
-    if (captureStateRef.current !== 'recording' || !cameraRef.current || isProcessingRef.current) {
+    // Schedule next tick immediately so cadence stays ~125ms regardless of capture time.
+    if (captureStateRef.current === 'recording') {
+      clearTimer();
+      if (burstRef.current > 0) { burstRef.current--; }
+      const delay = burstRef.current > 0 ? BURST_INTERVAL_MS : CAPTURE_INTERVAL_MS;
+      timerRef.current = setTimeout(() => captureFrame(), delay);
+    }
+
+    if (!cameraRef.current || isProcessingRef.current) {
+      return;
+    }
+    if (captureStateRef.current !== 'recording') {
+      clearTimer();
       return;
     }
 
     isProcessingRef.current = true;
     try {
-      const photo = await cameraRef.current.takePhoto({ flash: 'off' });
+      const photo = await cameraRef.current.takeSnapshot({ quality: 85 });
       const photoPath = photo.path;
       const photoUri = photoPath.startsWith('file://') ? photoPath : `file://${photoPath}`;
 
-      if (!photo.width || !photo.height) {
-        throw new Error('Captured photo missing size info');
+      const actualWidth = photo.width;
+      const actualHeight = photo.height;
+      if (!actualWidth || !actualHeight) {
+        throw new Error('Snapshot missing size info');
       }
-
-      const { width: actualWidth, height: actualHeight } = await new Promise<{ width: number; height: number }>(
-        (resolve, reject) => {
-          Image.getSize(photoUri, (w, h) => resolve({ width: w, height: h }), reject);
-        },
-      );
 
       const displayScale = Math.max(windowWidth / actualWidth, windowHeight / actualHeight);
       const boardPixelWidth = Math.floor(boardSize / displayScale);
@@ -187,19 +197,16 @@ export const ScanGame = ({ navigation }: ScanGameProps) => {
         return;
       }
 
-      const resp = await sendGameFrame(gameId, resizedPath);
-      if (resp.move) {
-        movesRef.current.push(resp.move);
-        setMoveCount(movesRef.current.length);
-      }
+      // Fire-and-forget upload — count locally, don't wait for response
+      sentCountRef.current++;
+      setFrameCount(sentCountRef.current);
+      sendGameFrame(gameId, resizedPath).catch(error => {
+        console.error('[ScanGame] Upload error', error);
+      });
     } catch (error) {
       console.error('[ScanGame] Capture loop error', error);
     } finally {
       isProcessingRef.current = false;
-      if (captureStateRef.current === 'recording') {
-        clearTimer();
-        timerRef.current = setTimeout(() => captureFrame(), CAPTURE_INTERVAL_MS);
-      }
     }
   }, [boardOffsetX, boardSize, clearTimer, overlayTopPx, windowHeight, windowWidth]);
 
@@ -213,112 +220,25 @@ export const ScanGame = ({ navigation }: ScanGameProps) => {
     }
 
     try {
-      movesRef.current = [];
-      setMoveCount(0);
-      cancelledRef.current = false;
-      const result = await startGame();
+      setFrameCount(0);
+      sentCountRef.current = 0;
+      burstRef.current = BURST_COUNT;
+      startingFenRef.current = customFen ?? STARTING_FEN;
+      const result = await startGame(boardFen);
       gameIdRef.current = result.game_id;
-      startingFenRef.current = result.starting_fen;
       setCaptureStateSafe('recording');
       captureFrame();
     } catch (error) {
       console.error('[ScanGame] startGame failed', error);
       Alert.alert('Error', error instanceof Error ? error.message : 'Failed to start game session');
     }
-  }, [captureState, captureFrame, finishGame, setCaptureStateSafe]);
-
-  // --- Frame Replay (debug alternative to live camera) ---
-
-  const handleReplayFrames = useCallback(async () => {
-    if (captureState !== 'idle') {
-      return;
-    }
-
-    // Read all JPEGs from the fixed replay folder, sorted by name.
-    let files: string[];
-    try {
-      const entries = await RNFS.readDir(REPLAY_FRAMES_DIR);
-      files = entries
-        .filter((e) => e.isFile() && /\.jpe?g$/i.test(e.name))
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((e) => e.path);
-    } catch {
-      Alert.alert(
-        'Replay folder not found',
-        `Place frame JPEGs in ${REPLAY_FRAMES_DIR} on the device and try again.`,
-      );
-      return;
-    }
-
-    if (files.length === 0) {
-      Alert.alert('No frames', `No JPEG files found in ${REPLAY_FRAMES_DIR}`);
-      return;
-    }
-
-    console.log(`[ScanGame] Replay: ${files.length} frames from ${REPLAY_FRAMES_DIR}`);
-
-    try {
-      movesRef.current = [];
-      setMoveCount(0);
-      cancelledRef.current = false;
-      reviewOnStopRef.current = false;
-
-      const gameResult = await startGame(undefined, 'video');
-      gameIdRef.current = gameResult.game_id;
-      startingFenRef.current = gameResult.starting_fen;
-
-      setCaptureStateSafe('uploading_video');
-      setVideoProgress({ current: 0, total: files.length });
-
-      for (let i = 0; i < files.length; i++) {
-        if (cancelledRef.current) {
-          break;
-        }
-
-        let resp;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            resp = await sendGameFrame(gameResult.game_id, files[i]);
-            break;
-          } catch (err) {
-            console.warn(`[ScanGame] Frame ${i} attempt ${attempt + 1} failed`, err);
-            if (attempt < 2) {
-              await new Promise((resolve) => setTimeout(resolve, 500));
-            }
-          }
-        }
-
-        if (resp?.move) {
-          movesRef.current.push(resp.move);
-          setMoveCount(movesRef.current.length);
-        }
-        setVideoProgress({ current: i + 1, total: files.length });
-
-        if (i + 1 < files.length) {
-          await new Promise((resolve) => setTimeout(resolve, REPLAY_FRAME_DELAY_MS));
-        }
-      }
-
-      if (!cancelledRef.current) {
-        await finishGame(true);
-      } else if (reviewOnStopRef.current) {
-        await finishGame(true);
-      }
-    } catch (error) {
-      console.error('[ScanGame] Replay frame upload error', error);
-      if (!cancelledRef.current) {
-        Alert.alert('Error', error instanceof Error ? error.message : 'Frame replay failed');
-        await cancelGame();
-      }
-    }
-  }, [captureState, finishGame, cancelGame, setCaptureStateSafe]);
+  }, [captureState, captureFrame, finishGame, setCaptureStateSafe, boardFen, customFen]);
 
   // --- Cleanup ---
 
   useEffect(() => {
     return () => {
       clearTimer();
-      cancelledRef.current = true;
       const gameId = gameIdRef.current;
       if (gameId) {
         discardGame(gameId).catch(() => {});
@@ -336,7 +256,7 @@ export const ScanGame = ({ navigation }: ScanGameProps) => {
   }
 
   const isRecording = captureState === 'recording';
-  const isUploading = captureState === 'uploading_video';
+  const isProcessing = captureState === 'processing';
   const isIdle = captureState === 'idle';
 
   return (
@@ -365,9 +285,9 @@ export const ScanGame = ({ navigation }: ScanGameProps) => {
         <View style={styles.instructionBox}>
           <ScreenHeader
             title="Record Game"
-            subtitle="Use live record, or replay test frames through the same server flow."
+            subtitle="Point your camera at the board and press Record."
             onBack={() => {
-              if (isRecording || isUploading) {
+              if (isRecording || isProcessing) {
                 cancelGame();
               }
               navigation.goBack();
@@ -380,6 +300,11 @@ export const ScanGame = ({ navigation }: ScanGameProps) => {
 
         {isIdle && (
           <View style={[styles.tipsList, { width: boardSize }]}>
+            {customFen && (
+              <Text style={[styles.tipText, { color: '#4fc3f7', marginBottom: 4 }]}>
+                ♟ Custom starting position set
+              </Text>
+            )}
             {RECORD_TIPS.map((tip) => (
               <Text key={tip} style={styles.tipText}>
                 {`• ${tip}`}
@@ -391,48 +316,55 @@ export const ScanGame = ({ navigation }: ScanGameProps) => {
         {isRecording && (
           <View style={localStyles.statusBar}>
             <Text style={localStyles.statusText}>
-              {moveCount > 0
-                ? `${moveCount} move${moveCount !== 1 ? 's' : ''} detected`
+              {frameCount > 0
+                ? `${frameCount} frame${frameCount !== 1 ? 's' : ''} captured`
                 : 'Watching for moves…'}
             </Text>
           </View>
         )}
 
-        {isUploading && videoProgress && (
-          <View style={localStyles.progressOverlay}>
+        {isProcessing && (
+          <View style={localStyles.processingOverlay}>
             <ActivityIndicator size="large" color="#fff" />
-            <Text style={localStyles.progressText}>
-              Frame {videoProgress.current}/{videoProgress.total}
-            </Text>
-            {moveCount > 0 && (
-              <Text style={localStyles.statusText}>
-                {moveCount} move{moveCount !== 1 ? 's' : ''} detected
-              </Text>
+            <Text style={localStyles.processingTitle}>Processing frames…</Text>
+            {progress && progress.enqueued > 0 && (
+              <>
+                <View style={localStyles.progressBarTrack}>
+                  <View
+                    style={[
+                      localStyles.progressBarFill,
+                      { width: `${Math.round((progress.processed / progress.enqueued) * 100)}%` },
+                    ]}
+                  />
+                </View>
+                <Text style={localStyles.processingDetail}>
+                  {progress.processed} / {progress.enqueued} frames ({Math.round((progress.processed / progress.enqueued) * 100)}%)
+                </Text>
+              </>
             )}
-            <View style={localStyles.buttonRow}>
-              <TouchableOpacity style={localStyles.stopButton} onPress={stopGame}>
-                <Text style={localStyles.stopText}>Stop & Review</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={localStyles.cancelButton} onPress={cancelGame}>
-                <Text style={localStyles.cancelText}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
           </View>
         )}
 
         <View style={styles.captureButtonContainer}>
-          {!isUploading && (
-            <TouchableOpacity
-              style={[styles.captureButton, isRecording && localStyles.recordingButton]}
-              onPress={handleRecordToggle}
-            >
-              <Text style={styles.buttonText}>{isRecording ? 'Stop' : 'Record'}</Text>
-            </TouchableOpacity>
-          )}
-          {isIdle && (
-            <TouchableOpacity style={localStyles.loadVideoButton} onPress={handleReplayFrames}>
-              <Text style={localStyles.loadVideoText}>Replay Frames</Text>
-            </TouchableOpacity>
+          {!isProcessing && (
+            <View style={{ alignItems: 'center', gap: 10 }}>
+              <TouchableOpacity
+                style={[styles.captureButton, isRecording && localStyles.recordingButton]}
+                onPress={handleRecordToggle}
+              >
+                <Text style={styles.buttonText}>{isRecording ? 'Stop' : 'Record'}</Text>
+              </TouchableOpacity>
+              {isIdle && (
+                <TouchableOpacity
+                  style={localStyles.setPositionButton}
+                  onPress={() => navigation.navigate('Analysis', { fen: customFen ?? STARTING_FEN })}
+                >
+                  <Text style={localStyles.setPositionText}>
+                    {customFen ? '✏️ Edit Start Position' : '♟ Set Start Position'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
           )}
         </View>
       </View>
@@ -457,55 +389,46 @@ const localStyles = StyleSheet.create({
     fontSize: 15,
     textAlign: 'center',
   },
-  progressOverlay: {
-    alignItems: 'center',
-    paddingVertical: 20,
-    gap: 12,
-  },
-  progressText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  buttonRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 8,
-  },
-  stopButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    backgroundColor: '#007AFF',
-    borderRadius: 8,
-  },
-  stopText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  cancelButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    backgroundColor: '#c0392b',
-    borderRadius: 8,
-  },
-  cancelText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  loadVideoButton: {
-    marginTop: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 28,
+  setPositionButton: {
     backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.3)',
   },
-  loadVideoText: {
+  setPositionText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  processingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 16,
+    zIndex: 10,
+  },
+  processingTitle: {
+    color: '#fff',
+    fontSize: 20,
     fontWeight: '600',
+  },
+  processingDetail: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 14,
+  },
+  progressBarTrack: {
+    width: '60%',
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    borderRadius: 4,
+    backgroundColor: '#4fc3f7',
   },
 });

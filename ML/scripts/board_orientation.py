@@ -105,7 +105,9 @@ def _a1_is_dark(rect, is_bgr=True):
 def get_perspective_transform(corners, img_resized):
     """
     Orders corners internally, then chooses rotation so bottom-left (a1) is dark.
-    Returns: (M, (out_size, out_size), rotation_degrees)
+    Returns (homography, oriented_corners) where oriented_corners is a
+    float32 array of shape (4, 2) holding the camera-space corner positions
+    in the order [a8, h8, h1, a1] (CW from white's top-left).
     """
     # 1) Order corners in Clock Wise order TL, TR, BR, BL
     src = order_corners(corners)
@@ -120,9 +122,12 @@ def get_perspective_transform(corners, img_resized):
     homography = cv2.getPerspectiveTransform(src, dst0)
     rect = cv2.warpPerspective(img_resized, homography, (IMAGE_SIZE, IMAGE_SIZE))
     if _a1_is_dark(rect):
-            return homography
-    # 3) a1 is light → rotate destination indices by 90° (direction no longer matters)
+        # 0° — src already maps to [a8, h8, h1, a1]
+        return homography, src.copy()
+    # 3) a1 is light → rotate destination indices by 90°
     dst90 = np.roll(dst0, 1, axis=0)
-    return cv2.getPerspectiveTransform(src, dst90)
+    # After roll: src[1]→a8, src[2]→h8, src[3]→h1, src[0]→a1
+    oriented = np.roll(src, -1, axis=0).copy()
+    return cv2.getPerspectiveTransform(src, dst90), oriented
         
     

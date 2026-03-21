@@ -1,4 +1,5 @@
 export const STARTING_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+export const STARTING_BOARD_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
 
 const FEN_DEFAULT_FIELDS = ['w', '-', '-', '0', '1'] as const;
 

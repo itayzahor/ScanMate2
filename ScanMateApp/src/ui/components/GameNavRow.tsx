@@ -3,38 +3,43 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { colors } from '../theme';
 
 type GameNavRowProps = {
-  currentIndex: number;
-  totalMoves: number;
-  onGoTo: (index: number) => void;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  onFirst: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+  onLast: () => void;
 };
 
-export const GameNavRow: React.FC<GameNavRowProps> = ({ currentIndex, totalMoves, onGoTo }) => (
+export const GameNavRow: React.FC<GameNavRowProps> = ({
+  canGoBack, canGoForward, onFirst, onPrev, onNext, onLast,
+}) => (
   <View style={navStyles.row}>
     <TouchableOpacity
-      style={[navStyles.button, currentIndex === 0 && navStyles.disabled]}
-      disabled={currentIndex === 0}
-      onPress={() => onGoTo(0)}
+      style={[navStyles.button, !canGoBack && navStyles.disabled]}
+      disabled={!canGoBack}
+      onPress={onFirst}
     >
       <Text style={navStyles.text}>{'|◁'}</Text>
     </TouchableOpacity>
     <TouchableOpacity
-      style={[navStyles.button, currentIndex === 0 && navStyles.disabled]}
-      disabled={currentIndex === 0}
-      onPress={() => onGoTo(currentIndex - 1)}
+      style={[navStyles.button, !canGoBack && navStyles.disabled]}
+      disabled={!canGoBack}
+      onPress={onPrev}
     >
       <Text style={navStyles.text}>{'◁'}</Text>
     </TouchableOpacity>
     <TouchableOpacity
-      style={[navStyles.button, currentIndex >= totalMoves && navStyles.disabled]}
-      disabled={currentIndex >= totalMoves}
-      onPress={() => onGoTo(currentIndex + 1)}
+      style={[navStyles.button, !canGoForward && navStyles.disabled]}
+      disabled={!canGoForward}
+      onPress={onNext}
     >
       <Text style={navStyles.text}>{'▷'}</Text>
     </TouchableOpacity>
     <TouchableOpacity
-      style={[navStyles.button, currentIndex >= totalMoves && navStyles.disabled]}
-      disabled={currentIndex >= totalMoves}
-      onPress={() => onGoTo(totalMoves)}
+      style={[navStyles.button, !canGoForward && navStyles.disabled]}
+      disabled={!canGoForward}
+      onPress={onLast}
     >
       <Text style={navStyles.text}>{'▷|'}</Text>
     </TouchableOpacity>

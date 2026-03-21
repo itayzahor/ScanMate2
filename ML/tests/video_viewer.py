@@ -552,7 +552,7 @@ def main() -> None:
             current_piece_squares: set[str] = set()
 
             # Compute perspective transform and warp (warp only for diff tracking)
-            h_matrix = get_perspective_transform(corners, img_resized)
+            h_matrix, _ = get_perspective_transform(corners, img_resized)
             last_h_matrix = h_matrix
             last_corners = corners
             warped_board = warp_board_to_grid(img_resized, h_matrix, 640)  # Keep 640 like replay

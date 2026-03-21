@@ -373,7 +373,7 @@ def run_pipeline_on_frame(
     if corners is None:
         raise RuntimeError("Board corners not detected")
 
-    homography = get_perspective_transform(corners, img_resized)
+    homography, _ = get_perspective_transform(corners, img_resized)
     skew = compute_horizontal_skew(corners)
     
     # Get pieces first for both orientation and detection

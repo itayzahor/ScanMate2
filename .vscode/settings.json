@@ -1,6 +1,8 @@
 {
     "java.configuration.updateBuildConfiguration": "automatic",
     "java.compile.nullAnalysis.mode": "automatic",
+    "python.defaultInterpreterPath": "${workspaceFolder}/ML/.venv/Scripts/python.exe",
+    "python.analysis.extraPaths": ["${workspaceFolder}/ML"],
     "files.associations": {
         "chrono": "cpp",
         "complex": "cpp",

@@ -157,7 +157,7 @@ def run_full_pipeline(image_bytes, session: Optional[SessionState] = None):
         raise ValueError("Could not find board corners.")
     print(f"[debug] detected corners: {corners}")
     # 5. Get Perspective Transform
-    homography = get_perspective_transform(corners, img_resized)
+    homography, _ = get_perspective_transform(corners, img_resized)
     
     # 6. Get Warped Image (for debug)
     warped_image = cv2.warpPerspective(img_resized, homography, (IMAGE_SIZE, IMAGE_SIZE))

@@ -3,6 +3,7 @@ const { Router } = require('express');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/user');
+const auth = require('../middleware/auth');
 
 const router = Router();
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -70,17 +71,4 @@ router.get('/me', auth, async (req, res, next) => {
   }
 });
 
-
-function auth(req, res, next) {
-  const hdr = req.headers.authorization || '';
-  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
-  if (!token) return res.status(401).json({ ok: false, error: 'No token' });
-  try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
-    next();
-  } catch {
-    res.status(401).json({ ok: false, error: 'Invalid token' });
-  }
-};
-
-module.exports = { router, auth };
+module.exports = router;

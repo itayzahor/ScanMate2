@@ -3,7 +3,6 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Switch,
   Modal,
   SafeAreaView,
   ScrollView,
@@ -12,6 +11,7 @@ import {
   Image,
   ImageSourcePropType,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
 import Chessboard, { ChessboardRef } from 'react-native-chessboard';
 import { Chess, Square, PieceSymbol, Color, Move } from 'chess.js';
@@ -22,6 +22,11 @@ import { analyzePosition, AnalyzePositionResponse, AnalysisLine } from '../../se
 import { ScreenHeader } from '../../ui/components/ScreenHeader';
 import { normalizeFen, STARTING_FEN } from '../../shared/utils/fen';
 import { getBoardSize } from '../../shared/constants/layout';
+import { SaveTitleModal } from '../../ui/components/SaveTitleModal';
+import { useAuth } from '../context/AuthContext';
+import { saveGame } from '../../services/games';
+import { FlipToggle } from '../../ui/components/FlipToggle';
+import { SideToMoveToggle } from '../../ui/components/SideToMoveToggle';
 
 // --- TYPES ---
 type PieceOption = { type: PieceSymbol; color: Color; label: string; asset: ImageSourcePropType };
@@ -628,6 +633,42 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
   const selectedMoveFromRef = useRef<Square | null>(null);
   const candidateMovesRef = useRef<CandidateMove[]>([]);
 
+  // Save & Export
+  const { user } = useAuth();
+  const [savingPosition, setSavingPosition] = useState(false);
+  const [saveModalVisible, setSaveModalVisible] = useState(false);
+  const defaultPositionTitle = `Position – ${new Date().toLocaleDateString()}`;
+
+  const handleSavePositionPress = useCallback(() => {
+    if (!user) {
+      Alert.alert('Sign In Required', 'Please sign in from the home screen to save positions.');
+      return;
+    }
+    setSaveModalVisible(true);
+  }, [user]);
+
+  const handleSavePositionConfirm = useCallback(async (title: string) => {
+    setSaveModalVisible(false);
+    setSavingPosition(true);
+    try {
+      await saveGame({
+        title,
+        startingFen: fen,
+        source: 'manual',
+      });
+      Alert.alert('Saved', 'Position saved to your library.');
+    } catch (err: any) {
+      Alert.alert('Save Failed', err.message ?? 'Something went wrong');
+    } finally {
+      setSavingPosition(false);
+    }
+  }, [fen]);
+
+  const handleExportPosition = useCallback(() => {
+    const url = `https://lichess.org/analysis/${encodeURIComponent(fen)}`;
+    Linking.openURL(url);
+  }, [fen]);
+
   const transformFenForMovement = useCallback(
     (value: string) => (isMovementReversed ? FenUtils.reverseFen(value) : value),
     [isMovementReversed],
@@ -910,15 +951,12 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
 
   // --- HANDLERS ---
 
-  const handleToggleTurn = () => {
+  const handleToggleTurn = (wantBlack: boolean) => {
+    const currentIsBlack = fen.split(' ')[1] === 'b';
+    if (wantBlack === currentIsBlack) return;
     clearAnalysisState();
     const newFen = FenUtils.toggleTurn(fen);
     applyFenUpdate(newFen);
-  };
-
-  const handleToggleBoardPerspective = () => {
-    clearMoveSelection();
-    setIsBoardFlipped((prev) => !prev);
   };
 
   const handleFlipDirection = () => {
@@ -1100,45 +1138,68 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
         </View>
 
         <View style={styles.controlsContainer}>
-        <View style={styles.controlRow}>
-          <Text style={styles.label}>Side to Move:</Text>
-          <View style={styles.switchWrapper}>
-            <Text style={[styles.switchLabel, !isBlackTurn && styles.activeLabel]}>White</Text>
-            <Switch
-              trackColor={{ false: "#767577", true: "#81b0ff" }}
-              thumbColor={isBlackTurn ? "#f5dd4b" : "#f4f3f4"}
-              onValueChange={handleToggleTurn}
-              value={isBlackTurn}
-            />
-            <Text style={[styles.switchLabel, isBlackTurn && styles.activeLabel]}>Black</Text>
+        {/* Row 1: Side to Move toggle + View as White/Black toggle */}
+        <View style={styles.buttonRow}>
+          <View style={{flex: 1}}>
+            <Text style={styles.toggleLabel}>Turn</Text>
+            <SideToMoveToggle isBlackTurn={isBlackTurn} onChange={handleToggleTurn} />
+          </View>
+          <View style={{flex: 1}}>
+            <Text style={styles.toggleLabel}>Board</Text>
+            <FlipToggle isFlipped={isBoardFlipped} onChange={setIsBoardFlipped} />
           </View>
         </View>
 
+        {/* Row 2: Flip Piece Direction + Analyze */}
         <View style={styles.buttonRow}>
-          <TouchableOpacity style={styles.actionButton} onPress={handleToggleBoardPerspective}>
-            <Text style={styles.buttonText}>
-              {isBoardFlipped ? '♖ View as White' : '♜ View as Black'}
-            </Text>
-          </TouchableOpacity>
-
           <TouchableOpacity style={styles.actionButton} onPress={handleFlipDirection}>
             <Text style={styles.buttonText}>
-              {isMovementReversed ? '↩ Restore Piece Direction' : '🔁 Flip Piece Direction'}
+              {isMovementReversed ? '↩ Restore Direction' : '🔁 Flip Direction'}
             </Text>
           </TouchableOpacity>
-        </View>
-
-        <View style={[styles.buttonRow, styles.buttonRowSpacing]}>
           <TouchableOpacity
             style={[styles.actionButton, styles.analyzeButton, isAnalyzing && styles.analyzeButtonDisabled]}
             onPress={handleAnalyze}
             disabled={isAnalyzing}
           >
             {isAnalyzing ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color="#fff" size="small" />
             ) : (
               <Text style={[styles.buttonText, styles.analyzeText]}>🚀 Analyze</Text>
             )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Row 3: Save + Export + Challenge */}
+        <View style={styles.buttonRow}>
+          <TouchableOpacity
+            style={[styles.actionButton, {backgroundColor: '#1c3a2a'}]}
+            onPress={handleSavePositionPress}
+            disabled={savingPosition}>
+            {savingPosition ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.buttonText}>💾 Save</Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.actionButton, {backgroundColor: '#1c2b4b'}]}
+            onPress={handleExportPosition}>
+            <Text style={styles.buttonText}>↗ Export</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.actionButton, {backgroundColor: '#2b1c4b'}]}
+            onPress={() => navigation.navigate('Friends', {challengeFen: fen})}>
+            <Text style={styles.buttonText}>⚔️ Challenge</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Record Game — navigate to ScanGame with current position as starting FEN */}
+        <View style={styles.buttonRow}>
+          <TouchableOpacity
+            style={[styles.actionButton, {backgroundColor: '#b71c1c', flex: 1}]}
+            onPress={() => navigation.navigate('ScanGame', {startingFen: fen})}>
+            <Text style={styles.buttonText}>🎬 Record Game from This Position</Text>
           </TouchableOpacity>
         </View>
 
@@ -1217,6 +1278,13 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
         color={promotionContext?.color ?? 'w'}
         onSelect={handlePromotionSelect}
         onCancel={handlePromotionCancel}
+      />
+
+      <SaveTitleModal
+        visible={saveModalVisible}
+        defaultTitle={defaultPositionTitle}
+        onSave={handleSavePositionConfirm}
+        onCancel={() => setSaveModalVisible(false)}
       />
 
     </SafeAreaView>

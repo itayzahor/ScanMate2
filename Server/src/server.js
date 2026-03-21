@@ -1,10 +1,12 @@
 require('dotenv').config();
+const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const { connectDB } = require('../setup/db');
 const routes = require('./routes');
+const { initSocket } = require('./socket');
 
 const app = express();
 
@@ -33,7 +35,9 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 connectDB()
   .then(() => {
-    app.listen(PORT, () => console.log(`API on http://localhost:${PORT}`));
+    const server = http.createServer(app);
+    initSocket(server);
+    server.listen(PORT, () => console.log(`API on http://localhost:${PORT}`));
   })
   .catch((e) => {
     console.error('Failed to connect DB:', e);

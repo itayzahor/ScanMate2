@@ -15,6 +15,12 @@ export const styles = StyleSheet.create({
   analyzeButtonDisabled:{ opacity: 0.6 },
   returnButton:        { backgroundColor: '#e67e22' },
 
+  /* Edit mode */
+  editButtonActive:    { backgroundColor: '#2e7d32' },
+  truncateButton:      { backgroundColor: '#4a1a1a' },
+  promoteButton:       { backgroundColor: '#1a3a4a' },
+  deleteButton:        { backgroundColor: '#4a1a2a' },
+
   /* Error */
   analysisError:       { color: '#e74c3c', marginTop: 8 },
 });
