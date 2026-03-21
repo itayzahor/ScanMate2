@@ -9,6 +9,9 @@ const User = require('./models/user');
 /** userId → socketId */
 const onlineUsers = new Map();
 
+/** Pending invites older than this are auto-expired */
+const INVITE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
 function initSocket(httpServer) {
   const io = new Server(httpServer, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
@@ -52,6 +55,27 @@ function initSocket(httpServer) {
         if (!friendship) return ack?.({ ok: false, error: 'Not friends' });
 
         // Neither player may have an active/pending game
+        // Auto-expire stale pending invites first
+        const stale = await LiveGame.find({
+          status: 'pending',
+          createdAt: { $lt: new Date(Date.now() - INVITE_TTL_MS) },
+          $or: [
+            { whitePlayer: { $in: [userId, recipientId] } },
+            { blackPlayer: { $in: [userId, recipientId] } },
+          ],
+        });
+        for (const g of stale) {
+          g.status = 'declined';
+          await g.save();
+          // Notify both players the invite expired
+          const wp = g.whitePlayer.toString();
+          const bp = g.blackPlayer.toString();
+          const wpSid = onlineUsers.get(wp);
+          const bpSid = onlineUsers.get(bp);
+          if (wpSid) io.to(wpSid).emit('game:invite:expired', { gameId: g._id });
+          if (bpSid) io.to(bpSid).emit('game:invite:expired', { gameId: g._id });
+        }
+
         const busy = await LiveGame.findOne({
           status: { $in: ['pending', 'active'] },
           $or: [
@@ -134,6 +158,35 @@ function initSocket(httpServer) {
         ack?.({ ok: true });
       } catch (err) {
         console.error('game:invite:respond error', err);
+        ack?.({ ok: false, error: 'Server error' });
+      }
+    });
+
+    // ── Cancel invite (inviter only) ───────────────────────────────
+    socket.on('game:invite:cancel', async (data, ack) => {
+      try {
+        const { gameId } = data;
+        const game = await LiveGame.findById(gameId);
+        if (!game || game.status !== 'pending') {
+          return ack?.({ ok: false, error: 'Game not found or not pending' });
+        }
+        if (game.invitedBy.toString() !== userId) {
+          return ack?.({ ok: false, error: 'Only the inviter can cancel' });
+        }
+
+        game.status = 'declined';
+        await game.save();
+
+        // Notify the other player
+        const otherId = game.whitePlayer.toString() === userId
+          ? game.blackPlayer.toString()
+          : game.whitePlayer.toString();
+        const otherSid = onlineUsers.get(otherId);
+        if (otherSid) io.to(otherSid).emit('game:invite:cancelled', { gameId });
+
+        ack?.({ ok: true });
+      } catch (err) {
+        console.error('game:invite:cancel error', err);
         ack?.({ ok: false, error: 'Server error' });
       }
     });

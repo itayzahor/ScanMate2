@@ -3,22 +3,18 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Modal,
   SafeAreaView,
   ScrollView,
   Alert,
-  Pressable,
-  Image,
-  ImageSourcePropType,
   ActivityIndicator,
   Linking,
 } from 'react-native';
 import Chessboard, { ChessboardRef } from 'react-native-chessboard';
-import { Chess, Square, PieceSymbol, Color, Move } from 'chess.js';
+import { Square, PieceSymbol, Color, Move } from 'chess.js';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../../../App';
+import type { RootStackParamList } from '../../shared/types/navigation';
 import { styles } from '../../ui/styles/Analysis.styles';
-import { analyzePosition, AnalyzePositionResponse, AnalysisLine } from '../../services/api';
+import { analyzePosition } from '../../services/api';
 import { ScreenHeader } from '../../ui/components/ScreenHeader';
 import { normalizeFen, STARTING_FEN } from '../../shared/utils/fen';
 import { getBoardSize } from '../../shared/constants/layout';
@@ -27,10 +23,21 @@ import { useAuth } from '../context/AuthContext';
 import { saveGame } from '../../services/games';
 import { FlipToggle } from '../../ui/components/FlipToggle';
 import { SideToMoveToggle } from '../../ui/components/SideToMoveToggle';
+import { PieceSelectorModal } from '../../ui/components/PieceSelectorModal';
+import { PromotionModal } from '../../ui/components/PromotionModal';
+import { OverlayRow } from '../../ui/components/BoardOverlayRow';
+import { useAnalysisPlayback } from '../../shared/hooks/useAnalysisPlayback';
+import { useRenderPiece } from '../../shared/hooks/useRenderPiece';
+import { BOARD_SQUARE_ROWS } from '../../shared/constants/board';
+import { reverseSquare, getSquareCenter } from '../../shared/utils/board';
+import {
+  loadChess,
+  generatePseudoMoves,
+  FenUtils,
+  formatEvaluation,
+} from '../../shared/utils/fenEditor';
 
 // --- TYPES ---
-type PieceOption = { type: PieceSymbol; color: Color; label: string; asset: ImageSourcePropType };
-type LogicMove = { from: Square; to: Square; promotion?: PieceSymbol; isFree?: boolean };
 type CandidateMove = {
   from: Square;
   to: Square;
@@ -40,513 +47,11 @@ type CandidateMove = {
   isFree?: boolean;
 };
 
-const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const;
-const PIECE_ASSETS: Record<`${Color}${PieceSymbol}`, ImageSourcePropType> = {
-  wp: require('react-native-chessboard/src/assets/wp.png'),
-  wn: require('react-native-chessboard/src/assets/wn.png'),
-  wb: require('react-native-chessboard/src/assets/wb.png'),
-  wr: require('react-native-chessboard/src/assets/wr.png'),
-  wq: require('react-native-chessboard/src/assets/wq.png'),
-  wk: require('react-native-chessboard/src/assets/wk.png'),
-  bp: require('react-native-chessboard/src/assets/bp.png'),
-  bn: require('react-native-chessboard/src/assets/bn.png'),
-  bb: require('react-native-chessboard/src/assets/bb.png'),
-  br: require('react-native-chessboard/src/assets/br.png'),
-  bq: require('react-native-chessboard/src/assets/bq.png'),
-  bk: require('react-native-chessboard/src/assets/bk.png'),
-};
-const BOARD_SQUARE_ROWS: Square[][] = Array.from({ length: 8 }, (_, rowIndex) => {
-  const rank = 8 - rowIndex;
-  return FILES.map((file) => `${file}${rank}` as Square);
-});
-
-const squareToIndices = (square: Square) => {
-  const file = square[0];
-  const rank = Number(square[1]);
-  const col = FILES.indexOf(file as typeof FILES[number]);
-  const row = 8 - rank;
-  return { row, col };
-};
-
-const indicesToSquare = (row: number, col: number): Square | null => {
-  if (row < 0 || row > 7 || col < 0 || col > 7) {
-    return null;
-  }
-  const file = FILES[col];
-  const rank = 8 - row;
-  return `${file}${rank}` as Square;
-};
-
-const reverseSquare = (square: Square): Square => {
-  const { row, col } = squareToIndices(square);
-  const reversedRow = 7 - row;
-  const reversedCol = 7 - col;
-  return indicesToSquare(reversedRow, reversedCol)!;
-};
-
-const getSquareCenter = (square: Square, boardPixels: number) => {
-  const { row, col } = squareToIndices(square);
-  const squareSize = boardPixels / 8;
-  return {
-    x: col * squareSize + squareSize / 2,
-    y: row * squareSize + squareSize / 2,
-  };
-};
-
-const PIECE_OPTIONS: PieceOption[] = [
-  { type: 'p', color: 'w', label: 'W Pawn', asset: PIECE_ASSETS.wp },
-  { type: 'n', color: 'w', label: 'W Knight', asset: PIECE_ASSETS.wn },
-  { type: 'b', color: 'w', label: 'W Bishop', asset: PIECE_ASSETS.wb },
-  { type: 'r', color: 'w', label: 'W Rook', asset: PIECE_ASSETS.wr },
-  { type: 'q', color: 'w', label: 'W Queen', asset: PIECE_ASSETS.wq },
-  { type: 'k', color: 'w', label: 'W King', asset: PIECE_ASSETS.wk },
-  { type: 'p', color: 'b', label: 'B Pawn', asset: PIECE_ASSETS.bp },
-  { type: 'n', color: 'b', label: 'B Knight', asset: PIECE_ASSETS.bn },
-  { type: 'b', color: 'b', label: 'B Bishop', asset: PIECE_ASSETS.bb },
-  { type: 'r', color: 'b', label: 'B Rook', asset: PIECE_ASSETS.br },
-  { type: 'q', color: 'b', label: 'B Queen', asset: PIECE_ASSETS.bq },
-  { type: 'k', color: 'b', label: 'B King', asset: PIECE_ASSETS.bk },
-];
-
-const PROMOTION_CHOICES: PieceSymbol[] = ['q', 'r', 'b', 'n'];
-
-// --- LOGIC HELPERS ---
-const emptyBoard = () =>
-  Array.from({ length: 8 }, () => Array(8).fill(null) as Array<string | null>);
-
-const placementToBoard = (placement: string) => {
-  const rows = placement.split('/');
-  const board = emptyBoard();
-
-  rows.forEach((row, rowIndex) => {
-    if (rowIndex >= 8) {
-      return;
-    }
-    let colIndex = 0;
-    row.split('').forEach((char) => {
-      if (colIndex >= 8) {
-        return;
-      }
-      if (/\d/.test(char)) {
-        colIndex += Number(char);
-        return;
-      }
-      board[rowIndex][colIndex] = char;
-      colIndex += 1;
-    });
-  });
-
-  return board;
-};
-
-const boardToPlacement = (board: Array<Array<string | null>>) =>
-  board
-    .map((row) => {
-      let result = '';
-      let emptyCount = 0;
-
-      row.forEach((cell) => {
-        if (!cell) {
-          emptyCount += 1;
-        } else {
-          if (emptyCount > 0) {
-            result += String(emptyCount);
-            emptyCount = 0;
-          }
-          result += cell;
-        }
-      });
-
-      if (emptyCount > 0) {
-        result += String(emptyCount);
-      }
-
-      return result || '8';
-    })
-    .join('/');
-
-const charToPiece = (char: string): { type: PieceSymbol; color: Color } => ({
-  type: char.toLowerCase() as PieceSymbol,
-  color: char === char.toUpperCase() ? 'w' : 'b',
-});
-
-const pieceToChar = (piece: { type: PieceSymbol; color: Color }) =>
-  piece.color === 'w' ? piece.type.toUpperCase() : piece.type;
-
-const loadChess = (fen: string): Chess | null => {
-  try {
-    return new Chess(fen);
-  } catch {
-    return null;
-  }
-};
-
-const getBoardAndPiece = (fen: string, square: Square) => {
-  const normalized = normalizeFen(fen);
-  const [placement] = normalized.split(' ');
-  const board = placementToBoard(placement);
-  const { row, col } = squareToIndices(square);
-  const cell = board[row]?.[col] ?? null;
-  if (!cell) {
-    return null;
-  }
-  return {
-    board,
-    pieceChar: cell,
-    piece: charToPiece(cell),
-    position: { row, col },
-  };
-};
-
-const collectSlidingMoves = (
-  moves: LogicMove[],
-  board: Array<Array<string | null>>,
-  start: { row: number; col: number },
-  deltas: Array<[number, number]>,
-  piece: { color: Color },
-) => {
-  deltas.forEach(([dr, dc]) => {
-    let row = start.row + dr;
-    let col = start.col + dc;
-    while (row >= 0 && row < 8 && col >= 0 && col < 8) {
-      const occupant = board[row][col];
-      if (occupant) {
-        const targetPiece = charToPiece(occupant);
-        if (targetPiece.color !== piece.color) {
-          const square = indicesToSquare(row, col);
-          if (square) {
-            moves.push({ from: indicesToSquare(start.row, start.col)!, to: square, isFree: true });
-          }
-        }
-        break;
-      }
-      const square = indicesToSquare(row, col);
-      if (square) {
-        moves.push({ from: indicesToSquare(start.row, start.col)!, to: square, isFree: true });
-      }
-      row += dr;
-      col += dc;
-    }
-  });
-};
-
-const generatePseudoMoves = (fen: string, square: Square): LogicMove[] => {
-  const info = getBoardAndPiece(fen, square);
-  if (!info) {
-    return [];
-  }
-  const { board, piece, position } = info;
-  const fromSquare = indicesToSquare(position.row, position.col)!;
-  const moves: LogicMove[] = [];
-
-  const addMove = (row: number, col: number) => {
-    const targetSquare = indicesToSquare(row, col);
-    if (!targetSquare) {
-      return;
-    }
-    const occupant = board[row]?.[col] ?? null;
-    if (occupant) {
-      const targetPiece = charToPiece(occupant);
-      if (targetPiece.color === piece.color) {
-        return;
-      }
-    }
-    moves.push({ from: fromSquare, to: targetSquare, isFree: true });
-  };
-
-  switch (piece.type) {
-    case 'p': {
-      const dir = piece.color === 'w' ? -1 : 1;
-      const startRow = piece.color === 'w' ? 6 : 1;
-      const nextRow = position.row + dir;
-      if (nextRow >= 0 && nextRow < 8 && !board[nextRow][position.col]) {
-        addMove(nextRow, position.col);
-        const doubleRow = position.row === startRow ? position.row + dir * 2 : null;
-        if (doubleRow !== null && doubleRow >= 0 && doubleRow < 8 && !board[doubleRow][position.col]) {
-          addMove(doubleRow, position.col);
-        }
-      }
-      [-1, 1].forEach((dc) => {
-        const targetCol = position.col + dc;
-        const targetRow = position.row + dir;
-        if (targetRow < 0 || targetRow >= 8 || targetCol < 0 || targetCol >= 8) {
-          return;
-        }
-        const occupant = board[targetRow][targetCol];
-        if (occupant && charToPiece(occupant).color !== piece.color) {
-          addMove(targetRow, targetCol);
-        }
-      });
-      break;
-    }
-    case 'n': {
-      const offsets = [
-        [2, 1],
-        [2, -1],
-        [-2, 1],
-        [-2, -1],
-        [1, 2],
-        [1, -2],
-        [-1, 2],
-        [-1, -2],
-      ];
-      offsets.forEach(([dr, dc]) => {
-        const row = position.row + dr;
-        const col = position.col + dc;
-        if (row >= 0 && row < 8 && col >= 0 && col < 8) {
-          addMove(row, col);
-        }
-      });
-      break;
-    }
-    case 'b': {
-      collectSlidingMoves(moves, board, position, [[1, 1], [1, -1], [-1, 1], [-1, -1]], piece);
-      break;
-    }
-    case 'r': {
-      collectSlidingMoves(moves, board, position, [[1, 0], [-1, 0], [0, 1], [0, -1]], piece);
-      break;
-    }
-    case 'q': {
-      collectSlidingMoves(
-        moves,
-        board,
-        position,
-        [[1, 1], [1, -1], [-1, 1], [-1, -1], [1, 0], [-1, 0], [0, 1], [0, -1]],
-        piece,
-      );
-      break;
-    }
-    case 'k': {
-      for (let dr = -1; dr <= 1; dr++) {
-        for (let dc = -1; dc <= 1; dc++) {
-          if (dr === 0 && dc === 0) {
-            continue;
-          }
-          const row = position.row + dr;
-          const col = position.col + dc;
-          if (row >= 0 && row < 8 && col >= 0 && col < 8) {
-            addMove(row, col);
-          }
-        }
-      }
-      break;
-    }
-    default:
-      break;
-  }
-
-  return moves;
-};
-
-const FenUtils = {
-  // Rotate the board 180 degrees (The "Direction" fix)
-  reverseFen: (fen: string): string => {
-    const [placement, activeColor, castling, enPassant, halfMove, fullMove] = fen.split(' ');
-    
-    const reversedPlacement = placement
-      .split('/')
-      .reverse()
-      .map((row) => row.split('').reverse().join(''))
-      .join('/');
-
-    const reversedEnPassant = enPassant !== '-' ? reverseSquare(enPassant as Square) : '-';
-
-    return `${reversedPlacement} ${activeColor} ${castling} ${reversedEnPassant} ${halfMove} ${fullMove}`;
-  },
-
-  // Toggle whose turn it is (White/Black)
-  toggleTurn: (fen: string): string => {
-    const parts = fen.split(' ');
-    parts[1] = parts[1] === 'w' ? 'b' : 'w';
-    return parts.join(' ');
-  },
-
-  // Update a single square with a new piece (or empty it)
-  updateSquare: (currentFen: string, square: Square, newPiece: { type: PieceSymbol; color: Color } | null): string => {
-    const normalized = normalizeFen(currentFen);
-    const [placement, ...rest] = normalized.split(' ');
-    const board = placementToBoard(placement);
-    const { row, col } = squareToIndices(square);
-
-    if (!board[row]) {
-      board[row] = Array(8).fill(null);
-    }
-
-    board[row][col] = newPiece ? pieceToChar(newPiece) : null;
-    const newPlacement = boardToPlacement(board);
-    const updatedFen = [newPlacement, ...rest].slice(0, 6).join(' ');
-    return updatedFen;
-  },
-  getPieceAt: (currentFen: string, square: Square) => {
-    const normalized = normalizeFen(currentFen);
-    const [placement] = normalized.split(' ');
-    const board = placementToBoard(placement);
-    const { row, col } = squareToIndices(square);
-    const cell = board[row]?.[col] ?? null;
-    if (!cell) {
-      return null;
-    }
-    return charToPiece(cell);
-  },
-  movePieceFreely: (
-    currentFen: string,
-    from: Square,
-    to: Square,
-    promotion?: PieceSymbol,
-  ): string => {
-    if (from === to) {
-      return normalizeFen(currentFen);
-    }
-
-    const normalized = normalizeFen(currentFen);
-    const [placement, ...rest] = normalized.split(' ');
-    const board = placementToBoard(placement);
-    const fromIdx = squareToIndices(from);
-    const toIdx = squareToIndices(to);
-    const piece = board[fromIdx.row]?.[fromIdx.col];
-
-    if (!piece) {
-      return normalized;
-    }
-
-    const pieceColor: Color = piece === piece.toUpperCase() ? 'w' : 'b';
-
-    if (!board[toIdx.row]) {
-      board[toIdx.row] = Array(8).fill(null);
-    }
-
-    board[fromIdx.row][fromIdx.col] = null;
-    const destinationPiece = promotion
-      ? pieceToChar({ type: promotion, color: pieceColor })
-      : piece;
-    board[toIdx.row][toIdx.col] = destinationPiece;
-
-    const newPlacement = boardToPlacement(board);
-    return [newPlacement, ...rest].slice(0, 6).join(' ');
-  },
-};
-
-const formatEvaluation = (evaluation: AnalysisLine['evaluation']) => {
-  if (!evaluation) {
-    return '—';
-  }
-  if (evaluation.type === 'mate' && typeof evaluation.value === 'number') {
-    return `#${evaluation.value}`;
-  }
-  if (evaluation.type === 'cp' && typeof evaluation.value === 'number') {
-    const score = evaluation.value / 100;
-    return `${score >= 0 ? '+' : ''}${score.toFixed(2)}`;
-  }
-  return '—';
-};
-
 // --- COMPONENTS ---
 
 /**
  * The "Window" that pops up to select a piece
  */
-const PieceSelectorModal = ({
-  visible,
-  onClose,
-  onSelect,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onSelect: (piece: { type: PieceSymbol; color: Color } | null) => void;
-}) => {
-  return (
-    <Modal animationType="fade" transparent={true} visible={visible} onRequestClose={onClose}>
-      <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onClose}>
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Edit Square</Text>
-          
-          <View style={styles.gridContainer}>
-            {PIECE_OPTIONS.map((p) => (
-              <TouchableOpacity
-                key={`${p.color}-${p.type}`}
-                style={styles.gridItem}
-                onPress={() => {
-                  onSelect({ type: p.type, color: p.color });
-                }}
-              >
-                <Image source={p.asset} style={styles.pieceImage} />
-              </TouchableOpacity>
-            ))}
-            
-            <TouchableOpacity
-              style={[styles.gridItem, styles.trashOption]}
-              onPress={() => onSelect(null)}
-            >
-              <Text style={styles.trashLabel}>🗑️ Empty</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </TouchableOpacity>
-    </Modal>
-  );
-};
-
-type PromotionModalProps = {
-  visible: boolean;
-  color: Color;
-  onSelect: (piece: PieceSymbol) => void;
-  onCancel: () => void;
-};
-
-const PromotionModal: React.FC<PromotionModalProps> = ({ visible, color, onSelect, onCancel }) => {
-  return (
-    <Modal animationType="fade" transparent visible={visible} onRequestClose={onCancel}>
-      <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onCancel}>
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Promote Pawn</Text>
-          <View style={styles.gridContainer}>
-            {PROMOTION_CHOICES.map((type) => (
-              <TouchableOpacity
-                key={`${color}-${type}`}
-                style={styles.gridItem}
-                onPress={() => onSelect(type)}
-              >
-                <Image
-                  source={PIECE_ASSETS[`${color}${type}` as `${Color}${PieceSymbol}`]}
-                  style={styles.pieceImage}
-                />
-              </TouchableOpacity>
-            ))}
-          </View>
-          <TouchableOpacity style={[styles.gridItem, styles.trashOption]} onPress={onCancel}>
-            <Text style={styles.trashLabel}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      </TouchableOpacity>
-    </Modal>
-  );
-};
-
-type OverlayRowProps = {
-  squares: Square[];
-  onSquarePress: (square: Square) => void;
-  onSquareLongPress: (square: Square) => void;
-};
-
-const OverlayRowComponent: React.FC<OverlayRowProps> = ({ squares, onSquarePress, onSquareLongPress }) => (
-  <View style={styles.overlayRow}>
-    {squares.map((square) => (
-      <Pressable
-        key={square}
-        style={styles.overlaySquare}
-        android_ripple={{ color: 'transparent' }}
-        delayLongPress={250}
-        onPress={() => onSquarePress(square)}
-        onLongPress={() => onSquareLongPress(square)}
-      />
-    ))}
-  </View>
-);
-
-const OverlayRow = React.memo(OverlayRowComponent);
-OverlayRow.displayName = 'OverlayRow';
-
 type BestMoveArrowProps = {
   from?: Square | null;
   to?: Square | null;
@@ -619,11 +124,9 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
   const [fen, setFen] = useState<string>(initialFen);
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
-  const [analysisResult, setAnalysisResult] = useState<AnalyzePositionResponse | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisBaseFen, setAnalysisBaseFen] = useState<string | null>(null);
-  const [pvIndex, setPvIndex] = useState(0);
   const [overlayPixels, setOverlayPixels] = useState<number | null>(null);
   const [isBoardFlipped, setIsBoardFlipped] = useState(false);
   const [isMovementReversed, setIsMovementReversed] = useState(false);
@@ -632,6 +135,17 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
   const navigationFen = route.params?.fen;
   const selectedMoveFromRef = useRef<Square | null>(null);
   const candidateMovesRef = useRef<CandidateMove[]>([]);
+
+  const {
+    analysisResult, setAnalysisResult,
+    primaryLine,
+    pvIndex, setPvIndex,
+    playbackMoveCount,
+    canStepForward, canStepBackward,
+    arrowFrom, arrowTo,
+    stepToIndex,
+    resetPlayback,
+  } = useAnalysisPlayback(analysisBaseFen);
 
   // Save & Export
   const { user } = useAuth();
@@ -727,11 +241,10 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
   }, []);
 
   const clearAnalysisState = useCallback(() => {
-    setAnalysisResult(null);
+    resetPlayback();
     setAnalysisError(null);
     setAnalysisBaseFen(null);
-    setPvIndex(0);
-  }, []);
+  }, [resetPlayback]);
 
   const clearMoveSelection = useCallback(() => {
     selectedMoveFromRef.current = null;
@@ -800,87 +313,19 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     applyFenUpdate(normalized);
   }, [navigationFen, clearAnalysisState, applyFenUpdate]);
 
-  const primaryLine = analysisResult?.lines?.[0];
-
-  const playbackData = useMemo(() => {
-    if (!analysisBaseFen || !primaryLine) {
-      return null;
-    }
-
-    const pvMoves = primaryLine.pv ?? [];
-    const chess = new Chess(analysisBaseFen);
-    const states: string[] = [analysisBaseFen];
-    const moves: Array<{ from: Square; to: Square; san: string; resultingFen: string }> = [];
-
-    for (const san of pvMoves) {
-      try {
-        const move = chess.move(san);
-        if (!move) {
-          break;
-        }
-        moves.push({
-          from: move.from as Square,
-          to: move.to as Square,
-          san,
-          resultingFen: chess.fen(),
-        });
-        states.push(chess.fen());
-      } catch (error) {
-        console.warn('[analysis playback] Failed to parse SAN move', san, error);
-        break;
-      }
-    }
-
-    return { states, moves };
-  }, [analysisBaseFen, primaryLine]);
-
-  const fallbackBestMove = useMemo(() => {
-    const move = primaryLine?.best_move;
-    if (!move || move.length < 4) {
-      return { from: null, to: null };
-    }
-    return {
-      from: move.slice(0, 2) as Square,
-      to: move.slice(2, 4) as Square,
-    };
-  }, [primaryLine]);
-
-  const upcomingMove = playbackData && pvIndex < playbackData.moves.length
-    ? playbackData.moves[pvIndex]
-    : null;
-
-  const arrowFrom = upcomingMove?.from ?? fallbackBestMove.from;
-  const arrowTo = upcomingMove?.to ?? fallbackBestMove.to;
-
-  const stepToIndex = useCallback((targetIndex: number) => {
-    if (!playbackData) {
-      return;
-    }
-    const maxIndex = playbackData.states.length - 1;
-    const nextIndex = Math.min(Math.max(targetIndex, 0), maxIndex);
-    if (nextIndex === pvIndex) {
-      return;
-    }
-    applyFenUpdate(playbackData.states[nextIndex]);
-    setPvIndex(nextIndex);
-  }, [playbackData, pvIndex, applyFenUpdate]);
+  const canResetPlayback = canStepBackward;
 
   const handlePlaybackForward = useCallback(() => {
-    stepToIndex(pvIndex + 1);
-  }, [pvIndex, stepToIndex]);
+    stepToIndex(pvIndex + 1, applyFenUpdate);
+  }, [pvIndex, stepToIndex, applyFenUpdate]);
 
   const handlePlaybackBackward = useCallback(() => {
-    stepToIndex(pvIndex - 1);
-  }, [pvIndex, stepToIndex]);
+    stepToIndex(pvIndex - 1, applyFenUpdate);
+  }, [pvIndex, stepToIndex, applyFenUpdate]);
 
   const handlePlaybackReset = useCallback(() => {
-    stepToIndex(0);
-  }, [stepToIndex]);
-
-  const playbackMoveCount = playbackData?.moves.length ?? 0;
-  const canStepForward = playbackMoveCount > 0 && pvIndex < playbackMoveCount;
-  const canStepBackward = playbackMoveCount > 0 && pvIndex > 0;
-  const canResetPlayback = canStepBackward;
+    stepToIndex(0, applyFenUpdate);
+  }, [stepToIndex, applyFenUpdate]);
 
   const highlightMovesFromSquare = useCallback(
     (square: Square) => {
@@ -930,24 +375,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     () => ({ transform: [{ rotate: isBoardFlipped ? '180deg' : '0deg' }] }),
     [isBoardFlipped],
   );
-  const renderChessPiece = useCallback(
-    (piece: `${string}${PieceSymbol}`) => {
-      const assetKey = (piece as keyof typeof PIECE_ASSETS) ?? 'wp';
-      const source = PIECE_ASSETS[assetKey] ?? PIECE_ASSETS.wp;
-      return (
-        <Image
-          source={source}
-          style={{
-            width: boardSize / 8,
-            height: boardSize / 8,
-            transform: [{ rotate: isBoardFlipped ? '180deg' : '0deg' }],
-          }}
-          resizeMode="contain"
-        />
-      );
-    },
-    [boardSize, isBoardFlipped],
-  );
+  const renderChessPiece = useRenderPiece(boardSize, isBoardFlipped);
 
   // --- HANDLERS ---
 
@@ -1073,7 +501,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     } finally {
       setIsAnalyzing(false);
     }
-  }, [fen]);
+  }, [fen, setAnalysisResult, setPvIndex]);
 
   const onMove = useCallback(
     (info: { state?: { fen?: string } }) => {
@@ -1140,11 +568,11 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
         <View style={styles.controlsContainer}>
         {/* Row 1: Side to Move toggle + View as White/Black toggle */}
         <View style={styles.buttonRow}>
-          <View style={{flex: 1}}>
+          <View style={styles.flexOne}>
             <Text style={styles.toggleLabel}>Turn</Text>
             <SideToMoveToggle isBlackTurn={isBlackTurn} onChange={handleToggleTurn} />
           </View>
-          <View style={{flex: 1}}>
+          <View style={styles.flexOne}>
             <Text style={styles.toggleLabel}>Board</Text>
             <FlipToggle isFlipped={isBoardFlipped} onChange={setIsBoardFlipped} />
           </View>
@@ -1173,7 +601,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
         {/* Row 3: Save + Export + Challenge */}
         <View style={styles.buttonRow}>
           <TouchableOpacity
-            style={[styles.actionButton, {backgroundColor: '#1c3a2a'}]}
+            style={[styles.actionButton, styles.saveButton]}
             onPress={handleSavePositionPress}
             disabled={savingPosition}>
             {savingPosition ? (
@@ -1183,12 +611,12 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
             )}
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.actionButton, {backgroundColor: '#1c2b4b'}]}
+            style={[styles.actionButton, styles.exportButton]}
             onPress={handleExportPosition}>
             <Text style={styles.buttonText}>↗ Export</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.actionButton, {backgroundColor: '#2b1c4b'}]}
+            style={[styles.actionButton, styles.challengeButton]}
             onPress={() => navigation.navigate('Friends', {challengeFen: fen})}>
             <Text style={styles.buttonText}>⚔️ Challenge</Text>
           </TouchableOpacity>
@@ -1197,7 +625,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
         {/* Record Game — navigate to ScanGame with current position as starting FEN */}
         <View style={styles.buttonRow}>
           <TouchableOpacity
-            style={[styles.actionButton, {backgroundColor: '#b71c1c', flex: 1}]}
+            style={[styles.actionButton, styles.recordButton]}
             onPress={() => navigation.navigate('ScanGame', {startingFen: fen})}>
             <Text style={styles.buttonText}>🎬 Record Game from This Position</Text>
           </TouchableOpacity>

@@ -19,22 +19,12 @@ import {GameLibraryScreen} from './src/app/screens/GameLibraryScreen';
 import {FriendsScreen} from './src/app/screens/FriendsScreen';
 import {FriendGameScreen} from './src/app/screens/FriendGameScreen';
 import type {GameSnapshot} from './src/shared/types/game';
+import type {RootStackParamList} from './src/shared/types/navigation';
 import {AuthProvider} from './src/app/context/AuthContext';
 import {SocketProvider, setNavigationRef} from './src/app/context/SocketContext';
 
-// This defines all your screens and what parameters they take
-export type RootStackParamList = {
-  Main: undefined;
-  ScanBoard: undefined;
-  ScanGame: { startingFen?: string } | undefined;
-  Result: { photoPath: string };
-  Analysis: { fen: string };
-  GameReview: { snapshots: GameSnapshot[]; moves?: string[]; flipped?: boolean };
-  Profile: undefined;
-  GameLibrary: undefined;
-  Friends: { challengeFen?: string } | undefined;
-  FriendGame: { gameId: string };
-};
+// Re-export for any external consumers
+export type {RootStackParamList} from './src/shared/types/navigation';
 
 // This tells the navigator to use that "map"
 const Stack = createNativeStackNavigator<RootStackParamList>();

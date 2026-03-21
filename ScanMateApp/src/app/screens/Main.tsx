@@ -2,7 +2,7 @@
 import React, {useState} from 'react';
 import {View, Text, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator} from 'react-native';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
-import type {RootStackParamList} from '../../../App';
+import type {RootStackParamList} from '../../shared/types/navigation';
 import {STARTING_FEN} from '../../shared/utils/fen';
 import {useAuth} from '../context/AuthContext';
 

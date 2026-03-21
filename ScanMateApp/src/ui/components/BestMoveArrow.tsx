@@ -1,15 +1,7 @@
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import type { Square } from 'chess.js';
-
-const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const;
-
-const getSquareCenter = (square: Square, boardSize: number) => {
-  const col = FILES.indexOf(square[0] as (typeof FILES)[number]);
-  const row = 8 - Number(square[1]);
-  const cell = boardSize / 8;
-  return { x: col * cell + cell / 2, y: row * cell + cell / 2 };
-};
+import { getSquareCenter } from '../../shared/utils/board';
 
 type BestMoveArrowProps = {
   from?: Square | null;

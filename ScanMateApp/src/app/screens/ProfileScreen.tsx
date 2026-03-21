@@ -1,7 +1,7 @@
 import React from 'react';
 import {View, Text, TouchableOpacity, StyleSheet, Image, Alert} from 'react-native';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
-import type {RootStackParamList} from '../../../App';
+import type {RootStackParamList} from '../../shared/types/navigation';
 import {useAuth} from '../context/AuthContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Profile'>;

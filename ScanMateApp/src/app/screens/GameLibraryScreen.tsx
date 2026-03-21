@@ -10,7 +10,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
-import type {RootStackParamList} from '../../../App';
+import type {RootStackParamList} from '../../shared/types/navigation';
 import {getGames, deleteGame, SavedGame} from '../../services/games';
 import {Chess} from 'chess.js';
 import type {GameSnapshot} from '../../shared/types/game';

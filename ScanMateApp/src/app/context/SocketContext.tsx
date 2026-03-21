@@ -15,13 +15,15 @@ import {
   onGameInvited,
   onGameStarted,
   onGameDeclined,
+  onGameInviteCancelled,
+  onGameInviteExpired,
   respondToInvite,
   getActiveGame,
   LiveGame,
   GameInvite,
 } from '../../services/liveGame';
 import type {NavigationContainerRef} from '@react-navigation/native';
-import type {RootStackParamList} from '../../../App';
+import type {RootStackParamList} from '../../shared/types/navigation';
 
 type SocketState = {
   connected: boolean;
@@ -119,7 +121,24 @@ export function SocketProvider({children}: {children: ReactNode}) {
         // Invite declined
         unsubs.push(
           onGameDeclined(() => {
+            setActiveGame(null);
             Alert.alert('Declined', 'Your game invitation was declined.');
+          }),
+        );
+
+        // Invite cancelled by inviter
+        unsubs.push(
+          onGameInviteCancelled(() => {
+            setActiveGame(null);
+            Alert.alert('Cancelled', 'The game invitation was cancelled.');
+          }),
+        );
+
+        // Invite expired (TTL)
+        unsubs.push(
+          onGameInviteExpired(() => {
+            setActiveGame(null);
+            Alert.alert('Expired', 'The game invitation has expired.');
           }),
         );
 

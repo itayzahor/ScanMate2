@@ -12,7 +12,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
-import type {RootStackParamList} from '../../../App';
+import type {RootStackParamList} from '../../shared/types/navigation';
 import {useAuth} from '../context/AuthContext';
 import {
   getFriends,
@@ -26,7 +26,7 @@ import {
   FriendsData,
 } from '../../services/friends';
 import {ChallengeModal} from '../../ui/components/ChallengeModal';
-import {sendInvite, abandonGame} from '../../services/liveGame';
+import {sendInvite, abandonGame, cancelInvite} from '../../services/liveGame';
 import {useSocket} from '../context/SocketContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Friends'>;
@@ -348,7 +348,36 @@ export const FriendsScreen = ({navigation, route}: Props) => {
             <Text style={styles.continueText}>Continue →</Text>
           )}
           {activeGame.status === 'pending' && (
-            <Text style={styles.pendingGameText}>Waiting for response…</Text>
+            <View>
+              <Text style={styles.pendingGameText}>Waiting for response…</Text>
+              {activeGame.invitedBy === user?.id && (
+                <TouchableOpacity
+                  style={styles.cancelChallengeBtn}
+                  onPress={() => {
+                    Alert.alert(
+                      'Cancel Challenge?',
+                      'Are you sure you want to cancel this invite?',
+                      [
+                        {text: 'No', style: 'cancel'},
+                        {
+                          text: 'Cancel Invite',
+                          style: 'destructive',
+                          onPress: async () => {
+                            try {
+                              await cancelInvite(activeGame._id);
+                              setActiveGame(null);
+                            } catch (err: any) {
+                              Alert.alert('Error', err.message ?? 'Failed to cancel invite');
+                            }
+                          },
+                        },
+                      ],
+                    );
+                  }}>
+                  <Text style={styles.cancelChallengeText}>Cancel Challenge</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           )}
         </TouchableOpacity>
       )}
@@ -488,6 +517,19 @@ const styles = StyleSheet.create({
     color: '#91a0c7',
     fontSize: 13,
     fontStyle: 'italic',
+  },
+  cancelChallengeBtn: {
+    marginTop: 8,
+    backgroundColor: '#b71c1c',
+    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    alignSelf: 'flex-start',
+  },
+  cancelChallengeText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
   },
   // Search
   searchRow: {

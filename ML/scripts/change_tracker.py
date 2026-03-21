@@ -282,13 +282,16 @@ def _check_castling(
         combined_score = diff_score + yolo_score
 
         # ── ACCEPTANCE ──
-        # Always require at least 1 YOLO condition to prevent false positives
-        # from hand movement / camera shake causing high diff on unrelated squares.
+        # All 4 YOLO conditions (both sources vacated + both dests occupied)
+        # is definitive — accept even with zero diff hits.
+        # Otherwise require diff support:
         # 3+ diff hits → need at least 1 YOLO condition (yolo_score >= 30)
         # 2 diff hits  → need at least 2 YOLO conditions (yolo_score >= 60)
-        if yolo_score < 30.0:
+        if yolo_score >= 120.0:
+            pass  # Full YOLO evidence, accept regardless of diff
+        elif yolo_score < 30.0:
             continue
-        if diff_hits >= 3:
+        elif diff_hits >= 3:
             pass  # Strong diff + some YOLO, accept
         elif diff_hits == 2 and yolo_score >= 60.0:
             pass  # Moderate diff + solid YOLO, accept

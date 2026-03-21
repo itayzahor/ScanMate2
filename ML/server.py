@@ -43,7 +43,7 @@ from scripts.detectors import get_board_corners, get_piece_predictions, PIECE_CL
 from scripts.board_orientation import get_perspective_transform, orient_board_state_for_white
 from scripts.piece_mapping import map_pieces_to_board
 from scripts.fen_converter import convert_board_to_fen
-from scripts.gatekeeper import validate_frame, compute_budget, MotionDetector
+from scripts.gatekeeper import validate_frame, MotionDetector
 from scripts.board_mapper import warp_board_to_grid
 from scripts.change_tracker import resolve_move_from_changes
 from scripts.session_state import DEFAULT_STARTING_FEN, SessionState
@@ -165,6 +165,36 @@ async def recognize_position(file: UploadFile = File(...)):
         })
 
 
+@app.post("/detect_corners/")
+async def detect_corners(file: UploadFile = File(...)):
+    """Lightweight check: can we find 4 board corners in the image?"""
+    try:
+        image_bytes = await file.read()
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Could not decode image.")
+
+        img_resized = cv2.resize(img, (IMAGE_SIZE, IMAGE_SIZE))
+        corners = get_board_corners(img_resized)
+
+        if corners is None:
+            return JSONResponse(status_code=422, content={
+                "status": "error",
+                "message": "No board detected",
+            })
+
+        return JSONResponse(content={
+            "status": "success",
+            "corners": corners.tolist(),
+        })
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={
+            "status": "error",
+            "message": str(exc),
+        })
+
+
 # ---------------------------------------------------------------------------
 # /recognize_game/ — stateful game recognition (frame-by-frame)
 # ---------------------------------------------------------------------------
@@ -173,6 +203,8 @@ async def recognize_position(file: UploadFile = File(...)):
 _PENDING_IDLE_LIMIT = 3
 # Initial budget — high enough for the diff detector to warm up.
 _BUDGET_INIT = 5
+# Budget boost granted on a rejected → accepted gatekeeper transition.
+_BUDGET_BOOST = 4
 
 _DUMP_GAME_FRAMES = os.getenv("DUMP_GAME_FRAMES", "1").lower() in {"1", "true", "yes", "on"}
 _DUMP_GAME_FRAMES_DIR = Path(
@@ -207,6 +239,7 @@ class _GameSession:
     # Background processing queue — frames are enqueued by /frame and
     # consumed by a dedicated worker thread.
     frame_queue: queue.Queue = field(default_factory=queue.Queue)
+    prev_rejected: bool = False  # was previous frame rejected by gatekeeper?
     enqueued_count: int = 0  # total frames enqueued (for numbering)
     last_enqueue_time: float = 0.0  # monotonic timestamp of last enqueued frame
     _worker: Optional[Thread] = field(default=None, repr=False)
@@ -311,14 +344,21 @@ def _process_frame(game: _GameSession, image_bytes: bytes) -> dict:
 
     # Gatekeeper — always runs (cheap relative to YOLO).
     gk = validate_frame(img_resized, motion_detector=game.motion_detector)
-    game.budget += compute_budget(gk)
 
     if not gk.is_valid:
+        game.prev_rejected = True
         print(f"[Frame {game.frame_count}] rejected: {gk.issues} blur={gk.blur_variance:.1f} hands={gk.hand_count} motion={gk.motion_score:.1f}")
         return {"status": "rejected", "fen": game.current_fen, "move_number": len(game.moves)}
 
+    # Transition: previous frame was rejected, this one is clean → boost budget.
+    if game.prev_rejected:
+        game.budget += _BUDGET_BOOST
+        print(f"[Frame {game.frame_count}] budget boost +{_BUDGET_BOOST} (prev rejected) → budget={game.budget}")
+        game.prev_rejected = False
+
     # If budget is exhausted, skip the expensive pipeline.
     if game.budget <= 0:
+        print(f"[Frame {game.frame_count}] skipped (budget=0)")
         return {"status": "skipped", "fen": game.current_fen, "move_number": len(game.moves)}
 
     game.budget -= 1

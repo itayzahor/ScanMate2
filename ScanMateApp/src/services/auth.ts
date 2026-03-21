@@ -1,18 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {GoogleSignin} from '@react-native-google-signin/google-signin';
-import {Platform} from 'react-native';
-
-// JS server base URL (user data, auth, friends, games)
-const LAN_HOST = '192.168.68.108';
-const LAN_USER_URL = LAN_HOST ? `http://${LAN_HOST}:4000` : null;
-
-const DEFAULT_USER_URL = Platform.select({
-  android: 'http://10.0.2.2:4000',
-  ios: 'http://localhost:4000',
-  default: 'http://localhost:4000',
-});
-
-const USER_API_URL = LAN_USER_URL ?? DEFAULT_USER_URL ?? 'http://localhost:4000';
+import {API_BASE_URL as USER_API_URL} from './config';
 
 const TOKEN_KEY = 'auth_token';
 

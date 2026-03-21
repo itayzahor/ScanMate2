@@ -21,6 +21,15 @@ export const styles = StyleSheet.create({
   promoteButton:       { backgroundColor: '#1a3a4a' },
   deleteButton:        { backgroundColor: '#4a1a2a' },
 
+  /* Save / Export / Challenge buttons */
+  saveButton:          { backgroundColor: '#1c3a2a' },
+  exportButton:        { backgroundColor: '#1c2b4b' },
+  challengeButton:     { backgroundColor: '#2b1c4b' },
+
+  /* Record row */
+  recordRow:           { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  recordButton:        { backgroundColor: '#b71c1c' },
+
   /* Error */
   analysisError:       { color: '#e74c3c', marginTop: 8 },
 });

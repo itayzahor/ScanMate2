@@ -1,19 +1,7 @@
 // services/liveGame.ts — Socket.io client + REST helpers for live games
-import {Platform} from 'react-native';
 import {io, Socket} from 'socket.io-client';
 import {getToken} from './auth';
-
-// ── Server URL (same LAN_HOST pattern as other services) ───────────
-const LAN_HOST = '192.168.68.108';
-const LAN_USER_URL = LAN_HOST ? `http://${LAN_HOST}:4000` : null;
-
-const DEFAULT_USER_URL = Platform.select({
-  android: 'http://10.0.2.2:4000',
-  ios: 'http://localhost:4000',
-  default: 'http://localhost:4000',
-});
-
-const USER_API_URL = LAN_USER_URL ?? DEFAULT_USER_URL ?? 'http://localhost:4000';
+import {API_BASE_URL as USER_API_URL} from './config';
 
 // ── Types ──────────────────────────────────────────────────────────
 export type LiveGamePlayer = {
@@ -137,6 +125,10 @@ export function respondToDraw(gameId: string, accept: boolean) {
   return emit('game:draw:respond', {gameId, accept});
 }
 
+export function cancelInvite(gameId: string) {
+  return emit('game:invite:cancel', {gameId});
+}
+
 // ── Event listeners ────────────────────────────────────────────────
 export function onGameInvited(cb: (data: GameInvite) => void) {
   socket?.on('game:invited', cb);
@@ -171,6 +163,16 @@ export function onDrawDeclined(cb: (data: {gameId: string}) => void) {
 export function onGameDeclined(cb: (data: {gameId: string}) => void) {
   socket?.on('game:declined', cb);
   return () => { socket?.off('game:declined', cb); };
+}
+
+export function onGameInviteCancelled(cb: (data: {gameId: string}) => void) {
+  socket?.on('game:invite:cancelled', cb);
+  return () => { socket?.off('game:invite:cancelled', cb); };
+}
+
+export function onGameInviteExpired(cb: (data: {gameId: string}) => void) {
+  socket?.on('game:invite:expired', cb);
+  return () => { socket?.off('game:invite:expired', cb); };
 }
 
 // ── REST helpers (for reconnection) ────────────────────────────────

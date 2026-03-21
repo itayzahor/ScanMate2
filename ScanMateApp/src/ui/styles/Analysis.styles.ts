@@ -235,4 +235,20 @@ export const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
+  flexOne: {
+    flex: 1,
+  },
+  saveButton: {
+    backgroundColor: '#1c3a2a',
+  },
+  exportButton: {
+    backgroundColor: '#1c2b4b',
+  },
+  challengeButton: {
+    backgroundColor: '#2b1c4b',
+  },
+  recordButton: {
+    backgroundColor: '#b71c1c',
+    flex: 1,
+  },
 });

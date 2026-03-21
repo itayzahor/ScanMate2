@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Image,
-  ImageSourcePropType,
   Linking,
   SafeAreaView,
   Text,
@@ -11,18 +9,18 @@ import {
   Alert,
 } from 'react-native';
 import Chessboard, { ChessboardRef } from 'react-native-chessboard';
-import { Chess, Move, Square, PieceSymbol, Color } from 'chess.js';
+import { Chess, Move } from 'chess.js';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import { styles } from '../../ui/styles/GameReview.styles';
-import type { RootStackParamList } from '../../../App';
+import type { RootStackParamList } from '../../shared/types/navigation';
 import { ScreenHeader } from '../../ui/components/ScreenHeader';
 import { BestMoveArrow } from '../../ui/components/BestMoveArrow';
 import { FlipToggle } from '../../ui/components/FlipToggle';
 import { MoveStrip, VariationChip } from '../../ui/components/MoveStrip';
 import { GameNavRow } from '../../ui/components/GameNavRow';
 import { AnalysisPanel } from '../../ui/components/AnalysisPanel';
-import { analyzePosition, AnalyzePositionResponse } from '../../services/api';
+import { analyzePosition } from '../../services/api';
 import { getBoardSize } from '../../shared/constants/layout';
 import { normalizeFen } from '../../shared/utils/fen';
 import { useAuth } from '../context/AuthContext';
@@ -42,23 +40,8 @@ import {
   deleteVariation,
   promoteVariation,
 } from '../../shared/utils/gameTree';
-
-/* ── piece assets (same as Analysis) ── */
-
-const PIECE_ASSETS: Record<`${Color}${PieceSymbol}`, ImageSourcePropType> = {
-  wp: require('react-native-chessboard/src/assets/wp.png'),
-  wn: require('react-native-chessboard/src/assets/wn.png'),
-  wb: require('react-native-chessboard/src/assets/wb.png'),
-  wr: require('react-native-chessboard/src/assets/wr.png'),
-  wq: require('react-native-chessboard/src/assets/wq.png'),
-  wk: require('react-native-chessboard/src/assets/wk.png'),
-  bp: require('react-native-chessboard/src/assets/bp.png'),
-  bn: require('react-native-chessboard/src/assets/bn.png'),
-  bb: require('react-native-chessboard/src/assets/bb.png'),
-  br: require('react-native-chessboard/src/assets/br.png'),
-  bq: require('react-native-chessboard/src/assets/bq.png'),
-  bk: require('react-native-chessboard/src/assets/bk.png'),
-};
+import { useRenderPiece } from '../../shared/hooks/useRenderPiece';
+import { useAnalysisPlayback } from '../../shared/hooks/useAnalysisPlayback';
 
 /* ── helpers ── */
 
@@ -111,14 +94,26 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
   const [isBoardFlipped, setIsBoardFlipped] = useState(route.params?.flipped ?? false);
 
   // Analysis state
-  const [analysisResult, setAnalysisResult] = useState<AnalyzePositionResponse | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisMode, setAnalysisMode] = useState(false);
   const [analysisBaseFen, setAnalysisBaseFen] = useState<string | null>(null);
   const [analysisBaseDepth, setAnalysisBaseDepth] = useState(0);
-  const [pvIndex, setPvIndex] = useState(0);
   const [displayFen, setDisplayFen] = useState<string | null>(null);
+
+  const {
+    setAnalysisResult,
+    primaryLine,
+    pvIndex, setPvIndex,
+    playbackMoveCount,
+    canStepForward, canStepBackward,
+    arrowFrom: pvArrowFrom, arrowTo: pvArrowTo,
+    stepToIndex,
+    resetPlayback,
+  } = useAnalysisPlayback(analysisBaseFen);
+
+  const arrowFrom = analysisMode ? pvArrowFrom : null;
+  const arrowTo = analysisMode ? pvArrowTo : null;
 
   const chessboardRef = useRef<ChessboardRef>(null);
 
@@ -148,56 +143,15 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     [nextChildren],
   );
 
-  // PV playback data
-  const primaryLine = analysisResult?.lines?.[0];
-
-  const playbackData = useMemo(() => {
-    if (!analysisBaseFen || !primaryLine) { return null; }
-    const pvMoves = primaryLine.pv ?? [];
-    const chess = new Chess(analysisBaseFen);
-    const states: string[] = [analysisBaseFen];
-    const moves: Array<{ from: Square; to: Square; san: string }> = [];
-
-    for (const san of pvMoves) {
-      try {
-        const move = chess.move(san);
-        if (!move) { break; }
-        moves.push({ from: move.from as Square, to: move.to as Square, san });
-        states.push(chess.fen());
-      } catch {
-        break;
-      }
-    }
-    return { states, moves };
-  }, [analysisBaseFen, primaryLine]);
-
-  const playbackMoveCount = playbackData?.moves.length ?? 0;
-  const canStepForward = playbackMoveCount > 0 && pvIndex < playbackMoveCount;
-  const canStepBackward = playbackMoveCount > 0 && pvIndex > 0;
-
-  // Arrow for upcoming PV move
-  const upcomingMove = playbackData && pvIndex < playbackData.moves.length
-    ? playbackData.moves[pvIndex]
-    : null;
-  const fallbackBestMove = useMemo(() => {
-    const move = primaryLine?.best_move;
-    if (!move || move.length < 4) { return { from: null, to: null }; }
-    return { from: move.slice(0, 2) as Square, to: move.slice(2, 4) as Square };
-  }, [primaryLine]);
-
-  const arrowFrom = analysisMode ? (upcomingMove?.from ?? fallbackBestMove.from) : null;
-  const arrowTo = analysisMode ? (upcomingMove?.to ?? fallbackBestMove.to) : null;
-
   // ── Navigation — path-based ──
 
   const exitAnalysis = useCallback(() => {
     setAnalysisMode(false);
-    setAnalysisResult(null);
+    resetPlayback();
     setAnalysisError(null);
     setAnalysisBaseFen(null);
     setDisplayFen(null);
-    setPvIndex(0);
-  }, []);
+  }, [resetPlayback]);
 
   const navigateTo = useCallback((newPath: number[]) => {
     setPath(newPath);
@@ -234,20 +188,16 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
   }, [path, navigateTo]);
 
   // PV stepping — also animates
-  const stepToIndex = useCallback((targetIndex: number) => {
-    if (!playbackData) { return; }
-    const maxIndex = playbackData.states.length - 1;
-    const nextIndex = Math.min(Math.max(targetIndex, 0), maxIndex);
-    if (nextIndex === pvIndex) { return; }
-    const nextFen = playbackData.states[nextIndex];
-    setDisplayFen(nextFen);
-    setPvIndex(nextIndex);
-    chessboardRef.current?.resetBoard(nextFen);
-  }, [playbackData, pvIndex]);
+  const handlePvStep = useCallback((targetIndex: number) => {
+    stepToIndex(targetIndex, (nextFen) => {
+      setDisplayFen(nextFen);
+      chessboardRef.current?.resetBoard(nextFen);
+    });
+  }, [stepToIndex]);
 
-  const handlePlaybackForward = useCallback(() => stepToIndex(pvIndex + 1), [pvIndex, stepToIndex]);
-  const handlePlaybackBackward = useCallback(() => stepToIndex(pvIndex - 1), [pvIndex, stepToIndex]);
-  const handlePlaybackReset = useCallback(() => stepToIndex(0), [stepToIndex]);
+  const handlePlaybackForward = useCallback(() => handlePvStep(pvIndex + 1), [pvIndex, handlePvStep]);
+  const handlePlaybackBackward = useCallback(() => handlePvStep(pvIndex - 1), [pvIndex, handlePvStep]);
+  const handlePlaybackReset = useCallback(() => handlePvStep(0), [handlePvStep]);
 
   // Analyze current position → enter analysis mode
   const handleAnalyze = useCallback(async () => {
@@ -269,7 +219,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [gameFen, currentDepth]);
+  }, [gameFen, currentDepth, setAnalysisResult, setPvIndex]);
 
   // Return to game from analysis mode
   const handleReturnToGame = useCallback(() => {
@@ -336,24 +286,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     [isBoardFlipped],
   );
 
-  const renderChessPiece = useCallback(
-    (piece: `${string}${PieceSymbol}`) => {
-      const assetKey = (piece as keyof typeof PIECE_ASSETS) ?? 'wp';
-      const source = PIECE_ASSETS[assetKey] ?? PIECE_ASSETS.wp;
-      return (
-        <Image
-          source={source}
-          style={{
-            width: boardSize / 8,
-            height: boardSize / 8,
-            transform: [{ rotate: isBoardFlipped ? '180deg' : '0deg' }],
-          }}
-          resizeMode="contain"
-        />
-      );
-    },
-    [boardSize, isBoardFlipped],
-  );
+  const renderChessPiece = useRenderPiece(boardSize, isBoardFlipped);
 
   // Edit mode handlers
   const handleEditMove = useCallback((info: any) => {
@@ -513,7 +446,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
       {!analysisMode && !editMode && (
         <View style={styles.toolbarRow}>
           <TouchableOpacity
-            style={[styles.toolbarButton, {backgroundColor: '#1c3a2a'}]}
+            style={[styles.toolbarButton, styles.saveButton]}
             onPress={handleSavePress}
             disabled={saving}>
             {saving ? (
@@ -523,14 +456,25 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
             )}
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.toolbarButton, {backgroundColor: '#1c2b4b'}]}
+            style={[styles.toolbarButton, styles.exportButton]}
             onPress={handleExport}>
             <Text style={styles.toolbarButtonText}>↗ Export</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.toolbarButton, {backgroundColor: '#2b1c4b'}]}
+            style={[styles.toolbarButton, styles.challengeButton]}
             onPress={() => navigation.navigate('Friends', {challengeFen: gameFen})}>
             <Text style={styles.toolbarButtonText}>⚔️ Challenge</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Record from position — full-width, same style as Analysis screen */}
+      {!analysisMode && !editMode && (
+        <View style={styles.recordRow}>
+          <TouchableOpacity
+            style={[styles.toolbarButton, styles.recordButton]}
+            onPress={() => navigation.navigate('ScanGame', {startingFen: gameFen ?? undefined})}>
+            <Text style={styles.toolbarButtonText}>🎬 Record Game from This Position</Text>
           </TouchableOpacity>
         </View>
       )}

@@ -1,17 +1,4 @@
-import {Platform} from 'react-native';
-
-// Set this to your laptop/desktop LAN IP when testing on a physical device.
-// Leave it as an empty string when using an Android emulator (which can hit 10.0.2.2).
-const LAN_HOST = '192.168.68.108';
-const LAN_BASE_URL = LAN_HOST ? `http://${LAN_HOST}:8000` : null;
-
-const DEFAULT_BASE_URL = Platform.select({
-  android: 'http://10.0.2.2:8000',
-  ios: 'http://localhost:8000',
-  default: 'http://localhost:8000',
-});
-
-const API_BASE_URL = LAN_BASE_URL ?? DEFAULT_BASE_URL ?? 'http://localhost:8000';
+import {ML_BASE_URL as API_BASE_URL} from './config';
 
 export type RecognizeBoardResponse = {
   status: 'success' | 'error';
@@ -172,6 +159,30 @@ export const sendGameFrame = async (
     const json = await response.json();
     throw new Error(extractApiMessage(json) ?? `Server responded with status ${response.status}`);
   }
+};
+
+/**
+ * Lightweight board detection: sends a cropped frame to the ML server
+ * and returns whether 4 board corners were found.
+ */
+export const checkBoardCorners = async (filePath: string): Promise<boolean> => {
+  const fileUri = filePath.startsWith('file://') || filePath.startsWith('content://')
+    ? filePath
+    : `file://${filePath}`;
+  const formData = new FormData();
+  formData.append('file', {
+    uri: fileUri,
+    type: 'image/jpeg',
+    name: 'check.jpg',
+  } as unknown as Blob);
+
+  const response = await fetch(`${API_BASE_URL}/detect_corners/`, {
+    method: 'POST',
+    body: formData,
+    headers: {Accept: 'application/json'},
+  });
+
+  return response.ok;
 };
 
 export const endGame = async (gameId: string): Promise<GameEndResponse> => {

@@ -6,6 +6,9 @@ const LiveGame = require('../models/liveGame');
 const router = Router();
 router.use(auth);
 
+/** Pending invites older than this are auto-expired */
+const INVITE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
 // Get current user's active or pending game (one at a time)
 router.get('/active', async (req, res, next) => {
   try {
@@ -17,6 +20,15 @@ router.get('/active', async (req, res, next) => {
       .populate('whitePlayer', 'name email picture')
       .populate('blackPlayer', 'name email picture')
       .lean();
+
+    // Auto-expire stale pending invites
+    if (game && game.status === 'pending' && game.createdAt) {
+      const age = Date.now() - new Date(game.createdAt).getTime();
+      if (age > INVITE_TTL_MS) {
+        await LiveGame.findByIdAndUpdate(game._id, { status: 'declined' });
+        return res.json({ ok: true, game: null });
+      }
+    }
 
     return res.json({ ok: true, game: game || null });
   } catch (err) {

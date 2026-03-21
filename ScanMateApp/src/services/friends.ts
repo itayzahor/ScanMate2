@@ -1,16 +1,5 @@
-import {Platform} from 'react-native';
 import {getToken} from './auth';
-
-const LAN_HOST = '192.168.68.51';
-const LAN_USER_URL = LAN_HOST ? `http://${LAN_HOST}:4000` : null;
-
-const DEFAULT_USER_URL = Platform.select({
-  android: 'http://10.0.2.2:4000',
-  ios: 'http://localhost:4000',
-  default: 'http://localhost:4000',
-});
-
-const USER_API_URL = LAN_USER_URL ?? DEFAULT_USER_URL ?? 'http://localhost:4000';
+import {API_BASE_URL as USER_API_URL} from './config';
 
 export type FriendUser = {
   _id: string;

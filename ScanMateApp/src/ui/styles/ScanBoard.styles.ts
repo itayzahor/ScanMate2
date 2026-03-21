@@ -119,4 +119,85 @@ export const styles = StyleSheet.create({
     width: '100%',
     backgroundColor: 'transparent',
   },
+  boardDetectedBorder: {
+    borderColor: '#4CAF50',
+  },
+  boardNotDetectedBorder: {
+    borderColor: '#F44336',
+  },
+  boardStatusText: {
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  customFenTip: {
+    color: '#4fc3f7',
+    marginBottom: 4,
+  },
+  captureButtonGroup: {
+    alignItems: 'center',
+    gap: 10,
+  },
+});
+
+export const localStyles = StyleSheet.create({
+  recordingButton: {
+    backgroundColor: '#c0392b',
+    borderColor: '#fff',
+  },
+  statusBar: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: 8,
+    marginTop: 12,
+  },
+  statusText: {
+    color: '#fff',
+    fontSize: 15,
+    textAlign: 'center',
+  },
+  setPositionButton: {
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  setPositionText: {
+    color: '#fff',
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  processingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 16,
+    zIndex: 10,
+  },
+  processingTitle: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '600',
+  },
+  processingDetail: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 14,
+  },
+  progressBarTrack: {
+    width: '60%',
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    borderRadius: 4,
+    backgroundColor: '#4fc3f7',
+  },
 });

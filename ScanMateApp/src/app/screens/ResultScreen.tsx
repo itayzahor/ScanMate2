@@ -15,8 +15,8 @@ const RESULT_TIPS = [
   'Retake if pieces look blurry or cut off',
 ];
 
-// Import RootStackParamList from App.tsx
-import type {RootStackParamList} from '../../../App'; 
+// Import RootStackParamList
+import type {RootStackParamList} from '../../shared/types/navigation'; 
 
 // Define the Props for this screen
 type ResultScreenProps = NativeStackScreenProps<RootStackParamList, 'Result'>;
