@@ -6,6 +6,7 @@ export type FriendUser = {
   name: string;
   email: string;
   picture: string | null;
+  username: string | null;
 };
 
 export type FriendshipRecord = {

@@ -1,3 +1,16 @@
+/**
+ * Analysis.tsx — Interactive position editor and engine analysis screen.
+ *
+ * Responsibilities:
+ *  - Renders an interactive chessboard for viewing / editing any FEN position.
+ *  - Tap a piece → see legal (or pseudo-legal) moves; tap a target → execute.
+ *  - Long-press a square → place / remove a piece via PieceSelectorModal.
+ *  - Toggle side-to-move, flip the board view, and reverse movement direction.
+ *  - Request Stockfish analysis and step through the best line move-by-move.
+ *  - Save positions to library, export to Lichess, challenge friends, or start
+ *    recording a full game from the current position.
+ */
+
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
@@ -26,10 +39,11 @@ import { SideToMoveToggle } from '../../ui/components/SideToMoveToggle';
 import { PieceSelectorModal } from '../../ui/components/PieceSelectorModal';
 import { PromotionModal } from '../../ui/components/PromotionModal';
 import { OverlayRow } from '../../ui/components/BoardOverlayRow';
+import { BestMoveArrow } from '../../ui/components/BestMoveArrow';
 import { useAnalysisPlayback } from '../../shared/hooks/useAnalysisPlayback';
 import { useRenderPiece } from '../../shared/hooks/useRenderPiece';
 import { BOARD_SQUARE_ROWS } from '../../shared/constants/board';
-import { reverseSquare, getSquareCenter } from '../../shared/utils/board';
+import { reverseSquare } from '../../shared/utils/board';
 import {
   loadChess,
   generatePseudoMoves,
@@ -37,104 +51,53 @@ import {
   formatEvaluation,
 } from '../../shared/utils/fenEditor';
 
-// --- TYPES ---
+// ── Types ────────────────────────────────────────────────────────────
+
+/** A candidate move the user can select after tapping a piece on the board. */
 type CandidateMove = {
-  from: Square;
-  to: Square;
-  logicFrom: Square;
-  logicTo: Square;
+  from: Square;      // UI square (may differ from logic when movement is reversed)
+  to: Square;        // UI target square
+  logicFrom: Square; // Source square in FEN coordinate space
+  logicTo: Square;   // Target square in FEN coordinate space
   promotion?: PieceSymbol;
-  isFree?: boolean;
+  isFree?: boolean;  // True when the position is invalid — moves bypass legality
 };
 
-// --- COMPONENTS ---
-
-/**
- * The "Window" that pops up to select a piece
- */
-type BestMoveArrowProps = {
-  from?: Square | null;
-  to?: Square | null;
-  boardPixels: number | null;
-};
-
-const BestMoveArrow: React.FC<BestMoveArrowProps> = ({ from, to, boardPixels }) => {
-  if (!from || !to || !boardPixels) {
-    return null;
-  }
-
-  const fromCenter = getSquareCenter(from, boardPixels);
-  const toCenter = getSquareCenter(to, boardPixels);
-  const dx = toCenter.x - fromCenter.x;
-  const dy = toCenter.y - fromCenter.y;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-  const thickness = Math.max(4, boardPixels * 0.01);
-  const headSize = Math.max(12, boardPixels * 0.04);
-  const bodyLength = Math.max(0, distance - headSize * 0.8);
-
-  return (
-    <View pointerEvents="none" style={styles.arrowLayer}>
-      <View
-        style={[
-          styles.arrowWrapper,
-          {
-            transform: [
-              { translateX: fromCenter.x },
-              { translateY: fromCenter.y },
-              { rotate: `${angle}deg` },
-            ],
-          },
-        ]}
-      >
-        <View
-          style={[
-            styles.arrowBody,
-            {
-              width: bodyLength,
-              height: thickness,
-              top: -thickness / 2,
-            },
-          ]}
-        />
-      </View>
-      <View
-        style={[
-          styles.arrowHead,
-          {
-            width: headSize,
-            height: headSize,
-            left: toCenter.x - headSize / 2,
-            top: toCenter.y - headSize / 2,
-            transform: [{ rotate: `${angle + 45}deg` }],
-          },
-        ]}
-      />
-    </View>
-  );
-};
-
-// --- MAIN SCREEN ---
+// ── Main Screen ──────────────────────────────────────────────────────
 
 type AnalysisScreenProps = NativeStackScreenProps<RootStackParamList, 'Analysis'>;
 
+/**
+ * Position editor and engine analysis screen.
+ *
+ * Accepts a FEN string via `route.params.fen` (defaults to the standard
+ * starting position). Supports both legal moves (via chess.js) and "free"
+ * pseudo-moves when the position is invalid (e.g. missing kings).
+ */
 export default function AnalysisScreen({ route, navigation }: AnalysisScreenProps) {
   const initialFen = normalizeFen(route.params?.fen ?? STARTING_FEN);
-  
+
+  // ── Board state ─────────────────────────────────────────────────────
   const [fen, setFen] = useState<string>(initialFen);
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysisBaseFen, setAnalysisBaseFen] = useState<string | null>(null);
   const [overlayPixels, setOverlayPixels] = useState<number | null>(null);
   const [isBoardFlipped, setIsBoardFlipped] = useState(false);
+  /** When true, piece direction is mirrored (useful for boards photographed from the black side). */
   const [isMovementReversed, setIsMovementReversed] = useState(false);
   const [promotionContext, setPromotionContext] = useState<{ move: CandidateMove; color: Color } | null>(null);
   const chessboardRef = useRef<ChessboardRef>(null);
   const navigationFen = route.params?.fen;
+  /** Tracks which square the user tapped to begin a move (null when idle). */
   const selectedMoveFromRef = useRef<Square | null>(null);
+  /** Legal/pseudo-legal destinations from the currently selected square. */
   const candidateMovesRef = useRef<CandidateMove[]>([]);
+
+  // ── Engine analysis state ───────────────────────────────────────────
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  /** The FEN that was sent to the engine — used by playback to rewind. */
+  const [analysisBaseFen, setAnalysisBaseFen] = useState<string | null>(null);
 
   const {
     analysisResult, setAnalysisResult,
@@ -147,7 +110,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     resetPlayback,
   } = useAnalysisPlayback(analysisBaseFen);
 
-  // Save & Export
+  // ── Save & Export ───────────────────────────────────────────────────
   const { user } = useAuth();
   const [savingPosition, setSavingPosition] = useState(false);
   const [saveModalVisible, setSaveModalVisible] = useState(false);
@@ -178,21 +141,31 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     }
   }, [fen]);
 
+  /** Builds a Lichess analysis URL from the current FEN and opens it in the browser. */
   const handleExportPosition = useCallback(() => {
-    const url = `https://lichess.org/analysis/${encodeURIComponent(fen)}`;
+    // The board part (index 0) stays as-is; remaining FEN fields are URI-encoded
+    const encoded = fen.split(' ').map((part, i) => i === 0 ? part : encodeURIComponent(part)).join(' ');
+    const url = `https://lichess.org/analysis/${encoded}`;
     Linking.openURL(url);
   }, [fen]);
 
+  // ── Movement mapping helpers ────────────────────────────────────────
+  // When the board is "reversed" (black at bottom), FEN coordinates
+  // need mirroring so taps map to the correct logical squares.
+
+  /** Mirrors FEN placement rows when movement is reversed; identity otherwise. */
   const transformFenForMovement = useCallback(
     (value: string) => (isMovementReversed ? FenUtils.reverseFen(value) : value),
     [isMovementReversed],
   );
 
+  /** Maps a UI square to its logical FEN square (accounts for reversal). */
   const mapSquareForMovement = useCallback(
     (square: Square) => (isMovementReversed ? reverseSquare(square) : square),
     [isMovementReversed],
   );
 
+  /** Returns the pawn's color if the move is a promotion, null otherwise. */
   const getPromotionColor = useCallback(
     (move: CandidateMove): Color | null => {
       const movingPiece = FenUtils.getPieceAt(fen, move.from);
@@ -200,6 +173,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
         return null;
       }
       const targetRank = Number(move.to[1]);
+      // Promotion ranks swap when the board movement is reversed
       const whitePromotionRank = isMovementReversed ? 1 : 8;
       const blackPromotionRank = isMovementReversed ? 8 : 1;
       if (
@@ -213,6 +187,9 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     [fen, isMovementReversed],
   );
 
+  // ── Low-level board helpers ─────────────────────────────────────────
+
+  /** Schedules a callback on the next animation frame (or setTimeout fallback). */
   const runOnNextFrame = useCallback((fn: () => void) => {
     if (typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(fn);
@@ -234,6 +211,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     [runOnNextFrame],
   );
 
+  /** Normalizes and applies a new FEN to both React state and the chessboard widget. */
   const applyFenUpdate = useCallback((nextFen: string) => {
     const normalized = normalizeFen(nextFen);
     setFen(normalized);
@@ -252,9 +230,15 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     resetHighlights();
   }, [resetHighlights]);
 
+  /**
+   * Executes a candidate move on the board.
+   * Uses chess.js for legal positions; falls back to free-move for invalid ones.
+   */
   const executeCandidateMove = useCallback(
     (move: CandidateMove, promotionOverride?: PieceSymbol) => {
       const resolvedPromotion = promotionOverride ?? move.promotion;
+
+      // Invalid positions can't use chess.js — move the piece freely instead
       if (move.isFree) {
         const logicFen = transformFenForMovement(fen);
         const nextLogicFen = FenUtils.movePieceFreely(
@@ -270,6 +254,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
         return;
       }
 
+      // Legal position — attempt the move through chess.js validation
       const logicFen = transformFenForMovement(fen);
       const chess = loadChess(logicFen);
       if (!chess) {
@@ -300,10 +285,14 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     ],
   );
 
+  // ── Effects ─────────────────────────────────────────────────────────
+
+  /** Clear move highlights whenever the FEN changes. */
   useEffect(() => {
     clearMoveSelection();
   }, [fen, clearMoveSelection]);
 
+  /** Sync board when navigation params push a new FEN. */
   useEffect(() => {
     if (!navigationFen) {
       return;
@@ -312,6 +301,8 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     clearAnalysisState();
     applyFenUpdate(normalized);
   }, [navigationFen, clearAnalysisState, applyFenUpdate]);
+
+  // ── Playback controls ──────────────────────────────────────────────
 
   const canResetPlayback = canStepBackward;
 
@@ -327,13 +318,20 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     stepToIndex(0, applyFenUpdate);
   }, [stepToIndex, applyFenUpdate]);
 
+  /**
+   * Highlights legal (or pseudo-legal) destination squares for a tapped piece.
+   * Stores the resulting candidates in `candidateMovesRef` for the next tap.
+   */
   const highlightMovesFromSquare = useCallback(
     (square: Square) => {
       const logicFen = transformFenForMovement(fen);
       const logicSquare = mapSquareForMovement(square);
       resetHighlights();
+      // Highlight the tapped piece's square in gold
       highlightSquare(square, 'rgba(255, 214, 0, 0.35)');
 
+      // If chess.js can't load the FEN (invalid position),
+      // fall back to pseudo-legal moves so pieces are still movable
       const chess = loadChess(logicFen);
       if (!chess) {
         const pseudoMoves = generatePseudoMoves(logicFen, logicSquare).map((move) => ({
@@ -352,6 +350,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
         return;
       }
 
+      // Valid position — get fully legal moves from chess.js
       const moves = chess.moves({ square: logicSquare, verbose: true }) as Move[];
       moves.forEach((move) => {
         const uiTarget = mapSquareForMovement(move.to as Square);
@@ -377,7 +376,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
   );
   const renderChessPiece = useRenderPiece(boardSize, isBoardFlipped);
 
-  // --- HANDLERS ---
+  // ── User interaction handlers ───────────────────────────────────────
 
   const handleToggleTurn = (wantBlack: boolean) => {
     const currentIsBlack = fen.split(' ')[1] === 'b';
@@ -421,14 +420,22 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     clearMoveSelection();
   }, [clearMoveSelection]);
 
+  /**
+   * Tap handler for the transparent square overlay.
+   * - If a piece is already selected and the tapped square is a valid target → execute move.
+   * - If tapping the same piece again → deselect.
+   * - Otherwise → select the tapped piece and highlight its moves.
+   */
   const handleSquarePress = useCallback(
     (square: Square) => {
       const selectedMoveFrom = selectedMoveFromRef.current;
       const candidateMoves = candidateMovesRef.current;
 
+      // A piece is already selected — check if the tapped square is a valid target
       if (selectedMoveFrom) {
         const move = candidateMoves.find((m) => m.to === square);
         if (move) {
+          // If this move triggers promotion, show the modal; otherwise execute
           const promotionColor = getPromotionColor(move);
           if (promotionColor) {
             setPromotionContext({ move, color: promotionColor });
@@ -438,12 +445,14 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
           return;
         }
 
+        // Tapped the same piece again — deselect
         if (selectedMoveFrom === square) {
           clearMoveSelection();
           return;
         }
       }
 
+      // No piece selected — tap a piece to start selection, or tap empty to clear
       const piece = FenUtils.getPieceAt(fen, square);
       if (piece) {
         highlightMovesFromSquare(square);
@@ -461,6 +470,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     ]
   );
 
+  /** Long-press opens the piece selector modal for placing / removing pieces. */
   const handleSquareLongPress = useCallback(
     (square: Square) => {
       clearMoveSelection();
@@ -470,6 +480,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     [clearMoveSelection]
   );
 
+  /** Places or removes a piece on the selected square (from PieceSelectorModal). */
   const handleSelectPiece = useCallback(
     (piece: { type: PieceSymbol; color: Color } | null) => {
       if (selectedSquare) {
@@ -484,10 +495,12 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     [selectedSquare, fen, clearAnalysisState, applyFenUpdate, clearMoveSelection]
   );
 
+  /** Sends the current FEN to the ML server for Stockfish analysis. */
   const handleAnalyze = useCallback(async () => {
     try {
       setIsAnalyzing(true);
       setAnalysisError(null);
+      // Snapshot the FEN so playback can rewind to this exact position
       const baseFen = fen;
       const result = await analyzePosition(baseFen, { depth: 18, multipv: 1 });
       setAnalysisBaseFen(baseFen);
@@ -503,6 +516,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     }
   }, [fen, setAnalysisResult, setPvIndex]);
 
+  /** Callback from the Chessboard widget when a drag-and-drop move completes. */
   const onMove = useCallback(
     (info: { state?: { fen?: string } }) => {
       const nextFen = info?.state?.fen;
@@ -514,6 +528,8 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
     },
     [applyFenUpdate, clearAnalysisState, clearMoveSelection]
   );
+
+  // ── Render ──────────────────────────────────────────────────────────
 
   return (
     <SafeAreaView style={styles.container}>
@@ -535,6 +551,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
             boardTransformStyle,
           ]}
         >
+        {/* Chessboard widget — handles drag-and-drop moves natively */}
           <Chessboard
             ref={chessboardRef}
             fen={fen}
@@ -542,6 +559,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
             boardSize={boardSize}
             renderPiece={renderChessPiece}
           />
+          {/* Transparent overlay captures taps/long-presses on individual squares */}
           <View
             style={styles.boardOverlay}
             onLayout={(event) => {
@@ -560,7 +578,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
             <BestMoveArrow
               from={arrowFrom}
               to={arrowTo}
-              boardPixels={overlayPixels ?? boardSize}
+              boardSize={overlayPixels ?? boardSize}
             />
           </View>
         </View>
@@ -613,11 +631,17 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
           <TouchableOpacity
             style={[styles.actionButton, styles.exportButton]}
             onPress={handleExportPosition}>
-            <Text style={styles.buttonText}>↗ Export</Text>
+            <Text style={styles.buttonText}>↗ Lichess</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.actionButton, styles.challengeButton]}
-            onPress={() => navigation.navigate('Friends', {challengeFen: fen})}>
+            onPress={() => {
+              if (!user) {
+                Alert.alert('Sign In Required', 'Please sign in from the home screen to challenge friends.');
+                return;
+              }
+              navigation.navigate('Friends', {challengeFen: fen});
+            }}>
             <Text style={styles.buttonText}>⚔️ Challenge</Text>
           </TouchableOpacity>
         </View>
@@ -644,9 +668,11 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
           </View>
         )}
 
+        {/* ── Analysis result card ──────────────────────────────────── */}
         <View style={[styles.analysisCard, { width: boardSize }]}>
           {primaryLine ? (
             <>
+              {/* Best line header: move index, SAN notation, evaluation score */}
               <View style={styles.analysisLine}>
                 <View style={styles.analysisLineHeader}>
                   <Text style={styles.analysisLineIndex}>#1</Text>
@@ -657,6 +683,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
                   {primaryLine.pv.join(' ')}
                 </Text>
               </View>
+              {/* Step-through controls: ◀ back, ⟲ reset, ▶ forward */}
               {playbackMoveCount > 0 && (
                 <View style={styles.playbackControls}>
                   <TouchableOpacity
@@ -695,12 +722,16 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
         </View>
       </ScrollView>
 
+      {/* ── Modals ───────────────────────────────────────────────────── */}
+
+      {/* Place/remove any piece on a long-pressed square */}
       <PieceSelectorModal
         visible={modalVisible}
         onClose={() => setModalVisible(false)}
         onSelect={handleSelectPiece}
       />
 
+      {/* Choose promotion piece (queen/rook/bishop/knight) */}
       <PromotionModal
         visible={!!promotionContext}
         color={promotionContext?.color ?? 'w'}
@@ -708,6 +739,7 @@ export default function AnalysisScreen({ route, navigation }: AnalysisScreenProp
         onCancel={handlePromotionCancel}
       />
 
+      {/* Title input dialog shown before saving a position to the library */}
       <SaveTitleModal
         visible={saveModalVisible}
         defaultTitle={defaultPositionTitle}

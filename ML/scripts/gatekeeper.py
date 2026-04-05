@@ -103,6 +103,32 @@ def validate_frame(
     return GatekeeperResult(is_valid=len(issues) == 0, issues=issues, blur_variance=blur_variance, hand_count=hand_count, motion_score=motion_score)
 
 
+# ---------------------------------------------------------------------------
+# Corner stability check
+# ---------------------------------------------------------------------------
+
+_CORNER_DISP_THRESHOLD = 30.0   # max single-corner displacement (px, 640×640)
+_CORNER_AREA_LO = 0.75          # min area ratio vs reference
+_CORNER_AREA_HI = 1.33          # max area ratio vs reference
+
+
+def corners_stable(
+    ref_corners: np.ndarray,
+    cur_corners: np.ndarray,
+) -> tuple[bool, float, float]:
+    """Check whether current oriented corners are close to the reference.
+
+    Both arrays are (4,2) float32 in the same order (a8, h8, h1, a1).
+    Returns (stable, max_displacement, area_ratio).
+    """
+    max_disp = float(np.max(np.linalg.norm(cur_corners - ref_corners, axis=1)))
+    ref_area = float(cv2.contourArea(ref_corners))
+    cur_area = float(cv2.contourArea(cur_corners))
+    area_ratio = cur_area / ref_area if ref_area > 0 else 1.0
+    stable = max_disp <= _CORNER_DISP_THRESHOLD and _CORNER_AREA_LO <= area_ratio <= _CORNER_AREA_HI
+    return stable, max_disp, area_ratio
+
+
 def compute_budget(result: GatekeeperResult) -> int:
     """Return how much budget to grant for this frame.
 

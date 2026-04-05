@@ -1,10 +1,20 @@
+/**
+ * GameLibraryScreen.tsx — Paginated list of saved games and positions.
+ *
+ * Responsibilities:
+ *  - Fetches and displays saved games from the server with infinite-scroll
+ *    pagination (PAGE_SIZE items per batch).
+ *  - Supports pull-to-refresh and long-press to delete.
+ *  - Tapping a game with moves replays it in GameReview; tapping a
+ *    position-only entry opens it in Analysis.
+ */
+
 import React, {useCallback, useEffect, useState} from 'react';
 import {
   View,
   Text,
   FlatList,
   TouchableOpacity,
-  StyleSheet,
   Alert,
   ActivityIndicator,
   RefreshControl,
@@ -14,18 +24,35 @@ import type {RootStackParamList} from '../../shared/types/navigation';
 import {getGames, deleteGame, SavedGame} from '../../services/games';
 import {Chess} from 'chess.js';
 import type {GameSnapshot} from '../../shared/types/game';
+import {styles} from '../../ui/styles/GameLibraryScreen.styles';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'GameLibrary'>;
 
+/** Number of games fetched per page. */
 const PAGE_SIZE = 20;
 
+// ── Component ────────────────────────────────────────────────────────
+
+/**
+ * Paginated game library — saved games and positions fetched from the
+ * server, displayed in a scrollable list with pull-to-refresh.
+ */
 export const GameLibraryScreen = ({navigation}: Props) => {
+  // ── State ────────────────────────────────────────────────────────
+
   const [games, setGames] = useState<SavedGame[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
+  // ── Data fetching ────────────────────────────────────────────────
+
+  /**
+   * Loads a page of games from the server.
+   * @param skip  Number of items already loaded (pagination offset).
+   * @param append  If true, appends to existing list instead of replacing.
+   */
   const fetchGames = useCallback(async (skip = 0, append = false) => {
     try {
       const result = await getGames(skip, PAGE_SIZE);
@@ -44,12 +71,14 @@ export const GameLibraryScreen = ({navigation}: Props) => {
     })();
   }, [fetchGames]);
 
+  /** Pull-to-refresh handler. */
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchGames(0);
     setRefreshing(false);
   }, [fetchGames]);
 
+  /** Infinite-scroll — loads the next page when the list nears the bottom. */
   const onEndReached = useCallback(async () => {
     if (loadingMore || games.length >= total) {
       return;
@@ -59,6 +88,9 @@ export const GameLibraryScreen = ({navigation}: Props) => {
     setLoadingMore(false);
   }, [loadingMore, games.length, total, fetchGames]);
 
+  // ── Handlers ─────────────────────────────────────────────────────
+
+  /** Shows a confirmation alert, then deletes the game on the server. */
   const handleDelete = useCallback(
     (game: SavedGame) => {
       Alert.alert('Delete', `Delete "${game.title}"?`, [
@@ -81,10 +113,15 @@ export const GameLibraryScreen = ({navigation}: Props) => {
     [],
   );
 
+  /**
+   * Opens a saved game for review or analysis.
+   * - Games with moves → replay in GameReview (builds snapshot array).
+   * - Position-only entries → open in Analysis.
+   */
   const handlePress = useCallback(
     (game: SavedGame) => {
       if (game.moves && game.moves.length > 0) {
-        // Replay as GameReview
+        // Rebuild snapshot history from the move list
         const chess = new Chess(game.startingFen || undefined);
         const snapshots: GameSnapshot[] = [{fen: chess.fen(), timestamp: 0}];
         const validMoves: string[] = [];
@@ -98,18 +135,22 @@ export const GameLibraryScreen = ({navigation}: Props) => {
         }
         navigation.navigate('GameReview', {snapshots, moves: validMoves});
       } else {
-        // Position only → Analysis
+        // Position only → open for analysis
         navigation.navigate('Analysis', {fen: game.startingFen});
       }
     },
     [navigation],
   );
 
+  // ── Render helpers ───────────────────────────────────────────────
+
+  /** Formats an ISO date string into a short human-readable label. */
   const formatDate = (iso: string) => {
     const d = new Date(iso);
     return d.toLocaleDateString(undefined, {month: 'short', day: 'numeric', year: 'numeric'});
   };
 
+  /** Renders a single game/position card with icon, title, and metadata. */
   const renderItem = ({item}: {item: SavedGame}) => {
     const isGame = item.moves && item.moves.length > 0;
     return (
@@ -144,6 +185,8 @@ export const GameLibraryScreen = ({navigation}: Props) => {
     );
   }
 
+  // ── Main render ─────────────────────────────────────────────────
+
   return (
     <View style={styles.container}>
       <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
@@ -155,6 +198,7 @@ export const GameLibraryScreen = ({navigation}: Props) => {
         {total} saved item{total !== 1 ? 's' : ''} · Long press to delete
       </Text>
 
+      {/* Paginated game list with pull-to-refresh and infinite scroll */}
       <FlatList
         data={games}
         keyExtractor={item => item._id}
@@ -183,96 +227,3 @@ export const GameLibraryScreen = ({navigation}: Props) => {
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0c111d',
-    paddingHorizontal: 24,
-    paddingTop: 48,
-  },
-  centered: {
-    flex: 1,
-    backgroundColor: '#0c111d',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  backButton: {
-    marginBottom: 16,
-  },
-  backText: {
-    color: '#91a0c7',
-    fontSize: 16,
-  },
-  heading: {
-    color: '#f5f7ff',
-    fontSize: 24,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  subheading: {
-    color: '#91a0c7',
-    fontSize: 13,
-    marginBottom: 20,
-  },
-  list: {
-    paddingBottom: 40,
-  },
-  emptyList: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  card: {
-    backgroundColor: '#141b2d',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.04)',
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  cardIcon: {
-    fontSize: 24,
-    marginRight: 12,
-    color: '#f5f7ff',
-  },
-  cardTextWrapper: {
-    flex: 1,
-  },
-  cardTitle: {
-    color: '#f5f7ff',
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  cardSubtitle: {
-    color: '#91a0c7',
-    fontSize: 13,
-  },
-  emptyContainer: {
-    alignItems: 'center',
-    paddingTop: 80,
-  },
-  emptyIcon: {
-    fontSize: 48,
-    marginBottom: 16,
-  },
-  emptyText: {
-    color: '#f5f7ff',
-    fontSize: 18,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  emptySubtext: {
-    color: '#91a0c7',
-    fontSize: 14,
-    textAlign: 'center',
-  },
-  footer: {
-    paddingVertical: 20,
-  },
-});

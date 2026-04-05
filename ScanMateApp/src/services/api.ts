@@ -204,23 +204,6 @@ export const endGame = async (gameId: string): Promise<GameEndResponse> => {
   return json as GameEndResponse;
 };
 
-export type GameStatusResponse = {
-  enqueued: number;
-  processed: number;
-};
-
-export const getGameStatus = async (gameId: string): Promise<GameStatusResponse> => {
-  const endpoint = `${API_BASE_URL}/recognize_game/${encodeURIComponent(gameId)}/status`;
-  const response = await fetch(endpoint, {
-    method: 'GET',
-    headers: {Accept: 'application/json'},
-  });
-  if (!response.ok) {
-    throw new Error(`Status check failed: ${response.status}`);
-  }
-  return (await response.json()) as GameStatusResponse;
-};
-
 export const discardGame = async (gameId: string): Promise<void> => {
   const endpoint = `${API_BASE_URL}/recognize_game/${encodeURIComponent(gameId)}/`;
   console.log('[discardGame] DELETE ->', endpoint);

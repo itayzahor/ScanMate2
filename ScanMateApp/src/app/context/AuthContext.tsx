@@ -7,6 +7,7 @@ import {
   fetchCurrentUser,
   getToken,
   clearToken,
+  deleteAccount as authDeleteAccount,
 } from '../../services/auth';
 import type {AuthUser} from '../../services/auth';
 
@@ -18,6 +19,8 @@ type AuthState = {
   loading: boolean;
   signIn: () => Promise<void>;
   signOut: () => Promise<void>;
+  setUser: (u: AuthUser) => void;
+  deleteAccount: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthState>({
@@ -26,6 +29,8 @@ const AuthContext = createContext<AuthState>({
   loading: true,
   signIn: async () => {},
   signOut: async () => {},
+  setUser: () => {},
+  deleteAccount: async () => {},
 });
 
 export function useAuth() {
@@ -82,8 +87,14 @@ export function AuthProvider({children}: {children: ReactNode}) {
     setToken(null);
   }, []);
 
+  const deleteAccountCb = useCallback(async () => {
+    await authDeleteAccount();
+    setUser(null);
+    setToken(null);
+  }, []);
+
   return (
-    <AuthContext.Provider value={{user, token, loading, signIn, signOut}}>
+    <AuthContext.Provider value={{user, token, loading, signIn, signOut, setUser, deleteAccount: deleteAccountCb}}>
       {children}
     </AuthContext.Provider>
   );

@@ -99,7 +99,7 @@ function initSocket(httpServer) {
         // Notify recipient if online
         const recipientSid = onlineUsers.get(recipientId);
         if (recipientSid) {
-          const inviter = await User.findById(userId).select('name email picture').lean();
+          const inviter = await User.findById(userId).select('name email picture username').lean();
           io.to(recipientSid).emit('game:invited', {
             gameId: game._id,
             inviter,
@@ -137,8 +137,8 @@ function initSocket(httpServer) {
           await game.save();
 
           const populated = await LiveGame.findById(gameId)
-            .populate('whitePlayer', 'name email picture')
-            .populate('blackPlayer', 'name email picture')
+            .populate('whitePlayer', 'name email picture username')
+            .populate('blackPlayer', 'name email picture username')
             .lean();
 
           // Notify both players

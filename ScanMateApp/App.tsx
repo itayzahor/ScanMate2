@@ -18,9 +18,10 @@ import {ProfileScreen} from './src/app/screens/ProfileScreen';
 import {GameLibraryScreen} from './src/app/screens/GameLibraryScreen';
 import {FriendsScreen} from './src/app/screens/FriendsScreen';
 import {FriendGameScreen} from './src/app/screens/FriendGameScreen';
+import {UsernameSetup} from './src/app/screens/UsernameSetup';
 import type {GameSnapshot} from './src/shared/types/game';
 import type {RootStackParamList} from './src/shared/types/navigation';
-import {AuthProvider} from './src/app/context/AuthContext';
+import {AuthProvider, useAuth} from './src/app/context/AuthContext';
 import {SocketProvider, setNavigationRef} from './src/app/context/SocketContext';
 
 // Re-export for any external consumers
@@ -121,17 +122,42 @@ const App = () => {
 
   return (
     <AuthProvider>
-      <SocketProvider>
-        <GestureHandlerRootView style={styles.appRoot}>
-          <NavigationContainer
-            ref={(ref) => setNavigationRef(ref as NavigationContainerRef<RootStackParamList> | null)}>
-            <Stack.Navigator screenOptions={{headerShown: false}}>
-              {stackScreens}
-            </Stack.Navigator>
-          </NavigationContainer>
-        </GestureHandlerRootView>
-      </SocketProvider>
+      <AppGate stackScreens={stackScreens} />
     </AuthProvider>
+  );
+};
+
+/**
+ * Inner gate: if user is signed in but has no username, show UsernameSetup
+ * instead of the main navigator.
+ */
+const AppGate = ({stackScreens}: {stackScreens: React.ReactElement}) => {
+  const {user, loading, setUser} = useAuth();
+  const needsUsername = user && !user.username;
+
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" />
+      </View>
+    );
+  }
+
+  if (needsUsername) {
+    return <UsernameSetup onComplete={setUser} />;
+  }
+
+  return (
+    <SocketProvider>
+      <GestureHandlerRootView style={styles.appRoot}>
+        <NavigationContainer
+          ref={(ref) => setNavigationRef(ref as NavigationContainerRef<RootStackParamList> | null)}>
+          <Stack.Navigator screenOptions={{headerShown: false}}>
+            {stackScreens}
+          </Stack.Navigator>
+        </NavigationContainer>
+      </GestureHandlerRootView>
+    </SocketProvider>
   );
 };
 

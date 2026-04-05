@@ -17,8 +17,8 @@ router.get('/active', async (req, res, next) => {
       status: { $in: ['pending', 'active'] },
       $or: [{ whitePlayer: userId }, { blackPlayer: userId }],
     })
-      .populate('whitePlayer', 'name email picture')
-      .populate('blackPlayer', 'name email picture')
+      .populate('whitePlayer', 'name email picture username')
+      .populate('blackPlayer', 'name email picture username')
       .lean();
 
     // Auto-expire stale pending invites
@@ -41,8 +41,8 @@ router.get('/:id', async (req, res, next) => {
   try {
     const userId = req.user.sub;
     const game = await LiveGame.findById(req.params.id)
-      .populate('whitePlayer', 'name email picture')
-      .populate('blackPlayer', 'name email picture')
+      .populate('whitePlayer', 'name email picture username')
+      .populate('blackPlayer', 'name email picture username')
       .lean();
 
     if (!game) return res.status(404).json({ ok: false, error: 'Game not found' });

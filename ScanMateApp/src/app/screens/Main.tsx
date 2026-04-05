@@ -1,19 +1,37 @@
-// src/screens/Main.tsx
+/**
+ * Main.tsx — Landing / home screen of the app.
+ *
+ * Responsibilities:
+ *  - Shows the app branding and tagline.
+ *  - Renders a top-right auth widget (sign-in button or user avatar).
+ *  - Provides two primary entry-point cards:
+ *      1. "Scan a Position" → opens the camera-based board scanner.
+ *      2. "Set Up & Play"  → opens the analysis board from the standard starting position.
+ */
+
 import React, {useState} from 'react';
-import {View, Text, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator} from 'react-native';
+import {View, Text, TouchableOpacity, Image, Alert, ActivityIndicator} from 'react-native';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
 import type {RootStackParamList} from '../../shared/types/navigation';
 import {STARTING_FEN} from '../../shared/utils/fen';
 import {useAuth} from '../context/AuthContext';
+import {styles} from '../../ui/styles/Main.styles';
 
-// This component receives a 'navigation' prop from the navigator
-// Define the prop types for this screen
 type Props = NativeStackScreenProps<RootStackParamList, 'Main'>;
 
+/**
+ * Home screen component.
+ *
+ * Uses `AuthContext` to determine sign-in state and display either
+ * a Google sign-in button or the user's avatar (tapping it navigates
+ * to the Profile screen).
+ */
 export const Main = ({navigation}: Props) => {
   const {user, loading: authLoading, signIn} = useAuth();
+  /** Local flag to show a spinner while the Google sign-in flow is in progress. */
   const [signingIn, setSigningIn] = useState(false);
 
+  /** Triggers Google sign-in and handles errors with a native alert. */
   const onSignInPress = async () => {
     setSigningIn(true);
     try {
@@ -25,25 +43,19 @@ export const Main = ({navigation}: Props) => {
     }
   };
 
-  const onProfilePress = () => {
-    navigation.navigate('Profile');
-  };
-
-  const onScanPress = () => {
-    navigation.navigate('ScanBoard');
-  };
-
-  const onAnalysisPress = () => {
-    navigation.navigate('Analysis', {fen: STARTING_FEN});
-  };
+  // ── Navigation handlers ───────────────────────────────────────────
+  const onProfilePress = () => navigation.navigate('Profile');
+  const onScanPress = () => navigation.navigate('ScanBoard');
+  const onAnalysisPress = () => navigation.navigate('Analysis', {fen: STARTING_FEN});
 
   return (
     <View style={styles.container}>
-      {/* Sign-In / User Header */}
+      {/* ── Auth row (top-right corner) ─────────────────────────────── */}
       <View style={styles.authRow}>
         {authLoading || signingIn ? (
           <ActivityIndicator color="#91a0c7" />
         ) : user ? (
+          // Signed-in: show avatar + name, tapping opens Profile
           <TouchableOpacity style={styles.userRow} onPress={onProfilePress} activeOpacity={0.7}>
             {user.picture ? (
               <Image source={{uri: user.picture}} style={styles.avatar} />
@@ -55,16 +67,19 @@ export const Main = ({navigation}: Props) => {
             <Text style={styles.userName} numberOfLines={1}>{user.name}</Text>
           </TouchableOpacity>
         ) : (
+          // Signed-out: show "Sign in with Google" button
           <TouchableOpacity style={styles.signInButton} onPress={onSignInPress} activeOpacity={0.8}>
             <Text style={styles.signInText}>Sign in with Google</Text>
           </TouchableOpacity>
         )}
       </View>
 
+      {/* ── Hero content ────────────────────────────────────────────── */}
       <View style={styles.content}>
         <Text style={styles.appName}>ScanMate</Text>
         <Text style={styles.subtitle}>Computer vision tools for chess training</Text>
 
+        {/* Primary CTA – opens camera scanner */}
         <TouchableOpacity style={styles.primaryButton} onPress={onScanPress} activeOpacity={0.85}>
           <View style={styles.buttonIconContainer}>
             <Text style={styles.buttonIcon}>📷</Text>
@@ -75,6 +90,7 @@ export const Main = ({navigation}: Props) => {
           </View>
         </TouchableOpacity>
 
+        {/* Secondary CTA – opens analysis board at starting position */}
         <TouchableOpacity style={styles.secondaryButton} onPress={onAnalysisPress} activeOpacity={0.85}>
           <View style={styles.buttonIconContainer}>
             <Text style={styles.buttonIcon}>♟</Text>
@@ -88,120 +104,3 @@ export const Main = ({navigation}: Props) => {
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0c111d',
-    paddingHorizontal: 24,
-    paddingTop: 48,
-    paddingBottom: 40,
-  },
-  authRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    minHeight: 40,
-    marginBottom: 8,
-  },
-  userRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    marginRight: 8,
-  },
-  avatarPlaceholder: {
-    backgroundColor: '#1c2b4b',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarLetter: {
-    color: '#f5f7ff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  userName: {
-    color: '#f5f7ff',
-    fontSize: 14,
-    fontWeight: '600',
-    maxWidth: 160,
-  },
-  signInButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#1c2b4b',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  signInText: {
-    color: '#91a0c7',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  content: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  appName: {
-    color: '#f5f7ff',
-    fontSize: 40,
-    fontWeight: '800',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  subtitle: {
-    color: '#91a0c7',
-    textAlign: 'center',
-    fontSize: 16,
-    marginBottom: 48,
-  },
-  primaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 20,
-    borderRadius: 20,
-    backgroundColor: '#1c2b4b',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    marginBottom: 16,
-  },
-  secondaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 20,
-    borderRadius: 20,
-    backgroundColor: '#141b2d',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.04)',
-  },
-  buttonIconContainer: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 16,
-  },
-  buttonIcon: {
-    fontSize: 26,
-  },
-  buttonTextWrapper: {
-    flex: 1,
-  },
-  buttonTitle: {
-    color: '#f5f7ff',
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  buttonSubtitle: {
-    color: '#8b98c7',
-    fontSize: 14,
-  },
-});

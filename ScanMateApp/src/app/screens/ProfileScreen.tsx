@@ -1,14 +1,43 @@
-import React from 'react';
-import {View, Text, TouchableOpacity, StyleSheet, Image, Alert} from 'react-native';
+/**
+ * ProfileScreen.tsx — User profile, account actions, and navigation hub.
+ *
+ * Responsibilities:
+ *  - Displays current user info (avatar, name, email, username).
+ *  - Inline username editing with availability check and validation.
+ *  - Navigation menu to Game Library and Friends.
+ *  - Sign-out and account deletion flows (with double confirmation).
+ */
+
+import React, {useState, useCallback} from 'react';
+import {View, Text, TouchableOpacity, Image, Alert, TextInput, ActivityIndicator} from 'react-native';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
 import type {RootStackParamList} from '../../shared/types/navigation';
 import {useAuth} from '../context/AuthContext';
+import {updateUsername, checkUsername} from '../../services/auth';
+import {styles} from '../../ui/styles/ProfileScreen.styles';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Profile'>;
 
-export const ProfileScreen = ({navigation}: Props) => {
-  const {user, signOut} = useAuth();
+// ── Component ────────────────────────────────────────────────────────────
 
+/**
+ * Profile hub — shows user identity, provides username editing,
+ * navigation shortcuts, and destructive account actions.
+ */
+export const ProfileScreen = ({navigation}: Props) => {
+  const {user, signOut, setUser, deleteAccount} = useAuth();
+
+  // ── Username-edit state ──────────────────────────────────────────────
+
+  const [editingUsername, setEditingUsername] = useState(false);
+  const [newUsername, setNewUsername] = useState('');
+  const [checking, setChecking] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+
+  // ── Account actions ──────────────────────────────────────────────────
+
+  /** Shows a confirmation alert then signs the user out. */
   const onSignOutPress = () => {
     Alert.alert('Sign Out', 'Are you sure?', [
       {text: 'Cancel', style: 'cancel'},
@@ -23,6 +52,100 @@ export const ProfileScreen = ({navigation}: Props) => {
     ]);
   };
 
+  /** Double-confirmation flow for permanent account deletion. */
+  const onDeleteAccountPress = () => {
+    Alert.alert(
+      'Delete Account',
+      'This will permanently delete your account, all saved games, and friend connections. This cannot be undone.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert(
+              'Are you absolutely sure?',
+              'Type "delete" mentally and confirm. All data will be lost forever.',
+              [
+                {text: 'Cancel', style: 'cancel'},
+                {
+                  text: 'Delete Forever',
+                  style: 'destructive',
+                  onPress: async () => {
+                    try {
+                      await deleteAccount();
+                      navigation.popToTop();
+                    } catch (err: any) {
+                      Alert.alert('Error', err.message ?? 'Failed to delete account');
+                    }
+                  },
+                },
+              ],
+            );
+          },
+        },
+      ],
+    );
+  };
+
+  // ── Username editing ─────────────────────────────────────────────────
+
+  /** Enters edit mode, pre-filling the current username. */
+  const startEditUsername = useCallback(() => {
+    setNewUsername(user?.username ?? '');
+    setUsernameError(null);
+    setEditingUsername(true);
+  }, [user]);
+
+  /** Exits edit mode and clears any validation error. */
+  const cancelEditUsername = useCallback(() => {
+    setEditingUsername(false);
+    setUsernameError(null);
+  }, []);
+
+  /**
+   * Validates, checks availability, and persists a new username.
+   * Format: 3–20 lowercase alphanumeric or underscores.
+   */
+  const saveUsername = useCallback(async () => {
+    const cleaned = newUsername.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,20}$/.test(cleaned)) {
+      setUsernameError('3-20 characters, letters, numbers, underscores only');
+      return;
+    }
+    if (cleaned === user?.username) {
+      setEditingUsername(false);
+      return;
+    }
+    setChecking(true);
+    setUsernameError(null);
+    try {
+      const available = await checkUsername(cleaned);
+      if (!available) {
+        setUsernameError('Username already taken');
+        setChecking(false);
+        return;
+      }
+    } catch (err: any) {
+      setUsernameError(err.message ?? 'Check failed');
+      setChecking(false);
+      return;
+    }
+    setChecking(false);
+    setSaving(true);
+    try {
+      const updated = await updateUsername(cleaned);
+      setUser(updated);
+      setEditingUsername(false);
+    } catch (err: any) {
+      setUsernameError(err.message ?? 'Failed to update');
+    } finally {
+      setSaving(false);
+    }
+  }, [newUsername, user, setUser]);
+
+  // ── Early return ──────────────────────────────────────────────────────
+
   if (!user) {
     return (
       <View style={styles.container}>
@@ -31,6 +154,8 @@ export const ProfileScreen = ({navigation}: Props) => {
     );
   }
 
+  // ── Main render ───────────────────────────────────────────────────────
+
   return (
     <View style={styles.container}>
       {/* Back button */}
@@ -38,7 +163,7 @@ export const ProfileScreen = ({navigation}: Props) => {
         <Text style={styles.backText}>← Back</Text>
       </TouchableOpacity>
 
-      {/* User info */}
+      {/* User info — avatar, name, email */}
       <View style={styles.profileHeader}>
         {user.picture ? (
           <Image source={{uri: user.picture}} style={styles.avatar} />
@@ -49,9 +174,47 @@ export const ProfileScreen = ({navigation}: Props) => {
         )}
         <Text style={styles.userName}>{user.name}</Text>
         <Text style={styles.userEmail}>{user.email}</Text>
+
+        {/* Username display / inline edit toggle */}
+        {!editingUsername ? (
+          <TouchableOpacity style={styles.usernameRow} onPress={startEditUsername}>
+            <Text style={styles.usernameLabel}>@{user.username ?? 'no username'}</Text>
+            <Text style={styles.editIcon}>✏️</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.usernameEditRow}>
+            <TextInput
+              style={styles.usernameInput}
+              value={newUsername}
+              onChangeText={t => {
+                setNewUsername(t);
+                setUsernameError(null);
+              }}
+              autoCapitalize="none"
+              autoCorrect={false}
+              maxLength={20}
+              placeholder="username"
+              placeholderTextColor="#6b7a9e"
+            />
+            <TouchableOpacity
+              style={styles.usernameSaveBtn}
+              onPress={saveUsername}
+              disabled={checking || saving}>
+              {checking || saving ? (
+                <ActivityIndicator color="#4ade80" size="small" />
+              ) : (
+                <Text style={styles.usernameSaveText}>✓</Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.usernameCancelBtn} onPress={cancelEditUsername}>
+              <Text style={styles.usernameCancelText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {usernameError && <Text style={styles.usernameError}>{usernameError}</Text>}
       </View>
 
-      {/* Menu items */}
+      {/* Navigation menu — Game Library, Friends */}
       <View style={styles.menu}>
         <TouchableOpacity
           style={styles.menuItem}
@@ -80,111 +243,15 @@ export const ProfileScreen = ({navigation}: Props) => {
         </TouchableOpacity>
       </View>
 
-      {/* Sign out */}
-      <TouchableOpacity style={styles.signOutButton} onPress={onSignOutPress} activeOpacity={0.8}>
-        <Text style={styles.signOutText}>Sign Out</Text>
-      </TouchableOpacity>
+      {/* Destructive actions — sign out, delete account */}
+      <View style={styles.bottomActions}>
+        <TouchableOpacity style={styles.signOutButton} onPress={onSignOutPress} activeOpacity={0.8}>
+          <Text style={styles.signOutText}>Sign Out</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.deleteAccountButton} onPress={onDeleteAccountPress} activeOpacity={0.8}>
+          <Text style={styles.deleteAccountText}>Delete Account</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0c111d',
-    paddingHorizontal: 24,
-    paddingTop: 48,
-  },
-  backButton: {
-    marginBottom: 24,
-  },
-  backText: {
-    color: '#91a0c7',
-    fontSize: 16,
-  },
-  profileHeader: {
-    alignItems: 'center',
-    marginBottom: 40,
-  },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    marginBottom: 16,
-  },
-  avatarPlaceholder: {
-    backgroundColor: '#1c2b4b',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarLetter: {
-    color: '#f5f7ff',
-    fontSize: 32,
-    fontWeight: '700',
-  },
-  userName: {
-    color: '#f5f7ff',
-    fontSize: 22,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  userEmail: {
-    color: '#91a0c7',
-    fontSize: 14,
-  },
-  menu: {
-    gap: 12,
-  },
-  menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 18,
-    borderRadius: 16,
-    backgroundColor: '#141b2d',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.04)',
-  },
-  menuIcon: {
-    fontSize: 24,
-    marginRight: 14,
-  },
-  menuTextWrapper: {
-    flex: 1,
-  },
-  menuTitle: {
-    color: '#f5f7ff',
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: 2,
-  },
-  menuSubtitle: {
-    color: '#8b98c7',
-    fontSize: 13,
-  },
-  menuChevron: {
-    color: '#8b98c7',
-    fontSize: 24,
-    fontWeight: '300',
-  },
-  signOutButton: {
-    marginTop: 'auto',
-    marginBottom: 40,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,70,70,0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,70,70,0.2)',
-    alignItems: 'center',
-  },
-  signOutText: {
-    color: '#ff5252',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  emptyText: {
-    color: '#91a0c7',
-    fontSize: 16,
-    textAlign: 'center',
-    marginTop: 100,
-  },
-});

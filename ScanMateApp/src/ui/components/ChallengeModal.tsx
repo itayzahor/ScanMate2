@@ -38,7 +38,7 @@ export function ChallengeModal({visible, friend, startingFen, onSend, onCancel, 
                 <Text style={styles.avatarLetter}>{friend.name?.charAt(0) ?? '?'}</Text>
               </View>
             )}
-            <Text style={styles.friendName}>{friend.name}</Text>
+            <Text style={styles.friendName}>{friend.username ? `@${friend.username}` : friend.name}</Text>
           </View>
 
           <Text style={styles.title}>Challenge to a game</Text>

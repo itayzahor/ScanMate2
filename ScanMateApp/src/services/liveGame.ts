@@ -9,6 +9,7 @@ export type LiveGamePlayer = {
   name: string;
   email: string;
   picture: string | null;
+  username: string | null;
 };
 
 export type LiveGame = {

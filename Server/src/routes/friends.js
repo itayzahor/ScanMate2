@@ -17,13 +17,10 @@ router.get('/search', async (req, res, next) => {
     const escaped = q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const users = await User.find({
       _id: { $ne: req.user.sub },
-      $or: [
-        { email: { $regex: escaped, $options: 'i' } },
-        { name: { $regex: escaped, $options: 'i' } },
-      ],
+      username: { $regex: escaped, $options: 'i' },
     })
       .limit(10)
-      .select('name email picture')
+      .select('name email picture username')
       .lean();
     return res.json({ ok: true, users });
   } catch (err) {
@@ -154,8 +151,8 @@ router.get('/', async (req, res, next) => {
       status: 'accepted',
       $or: [{ requester: userId }, { recipient: userId }],
     })
-      .populate('requester', 'name email picture')
-      .populate('recipient', 'name email picture')
+      .populate('requester', 'name email picture username')
+      .populate('recipient', 'name email picture username')
       .lean();
 
     // Incoming pending requests
@@ -163,7 +160,7 @@ router.get('/', async (req, res, next) => {
       status: 'pending',
       recipient: userId,
     })
-      .populate('requester', 'name email picture')
+      .populate('requester', 'name email picture username')
       .lean();
 
     // Outgoing pending requests
@@ -171,7 +168,7 @@ router.get('/', async (req, res, next) => {
       status: 'pending',
       requester: userId,
     })
-      .populate('recipient', 'name email picture')
+      .populate('recipient', 'name email picture username')
       .lean();
 
     res.json({ ok: true, friends, incoming, outgoing });

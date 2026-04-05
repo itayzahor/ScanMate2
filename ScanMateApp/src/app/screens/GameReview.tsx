@@ -1,3 +1,21 @@
+/**
+ * GameReview.tsx — Post-game review & analysis screen.
+ *
+ * Responsibilities:
+ *  - Receives a list of GameSnapshots (FEN + timestamp) from ScanGame
+ *    and builds an interactive game tree supporting variations.
+ *  - Provides step-through navigation (first / prev / next / last) plus
+ *    a MoveStrip showing context around the current position.
+ *  - Edit mode lets the user drag pieces to add new moves / variations,
+ *    truncate the line, promote or delete variation branches.
+ *  - "Analyze" sends the current FEN to the engine and enters analysis
+ *    mode with PV playback and a best-move arrow overlay.
+ *  - Save (to user library), Export (Lichess PGN paste), and Challenge
+ *    (invite a friend from this position) actions.
+ *  - "Record Game from This Position" re-enters ScanGame with the
+ *    current FEN as the starting position.
+ */
+
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -43,8 +61,13 @@ import {
 import { useRenderPiece } from '../../shared/hooks/useRenderPiece';
 import { useAnalysisPlayback } from '../../shared/hooks/useAnalysisPlayback';
 
-/* ── helpers ── */
+// ── Helpers ──────────────────────────────────────────────────────────
 
+/**
+ * Derives the SAN notation for the move that transforms `previous`
+ * into `next` by brute-forcing all legal moves from `previous`.
+ * Returns '…' if no legal move matches (e.g. a manually edited FEN).
+ */
 const deriveMoveSan = (previous: string, next: string): string => {
   if (!previous) { return 'Start Position'; }
   try {
@@ -63,19 +86,25 @@ const deriveMoveSan = (previous: string, next: string): string => {
   return '…';
 };
 
-/* ── types ── */
+// ── Types ────────────────────────────────────────────────────────────
 
 type GameReviewProps = NativeStackScreenProps<RootStackParamList, 'GameReview'>;
 
-/* ── component ── */
+// ── Component ───────────────────────────────────────────────────────
 
+/**
+ * Interactive game review with a full game tree, edit mode,
+ * engine analysis, save/export, and friend challenge.
+ */
 export const GameReview = ({ route, navigation }: GameReviewProps) => {
   const rawSnapshots = route.params?.snapshots;
   const snapshots = useMemo(() => rawSnapshots ?? [], [rawSnapshots]);
   const passedMoves = route.params?.moves;
   const boardSize = getBoardSize();
 
-  // Build initial SAN list for tree construction
+  // ── Game tree construction ──────────────────────────────────────────
+
+  /** Build initial SAN list — prefer server-provided moves, fall back to brute-force derivation. */
   const initialSans = useMemo<string[]>(() => {
     if (passedMoves && passedMoves.length === snapshots.length - 1) {
       return passedMoves;
@@ -83,22 +112,26 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     return snapshots.slice(1).map((snap, i) => deriveMoveSan(snapshots[i].fen, snap.fen));
   }, [snapshots, passedMoves]);
 
-  // Game tree + navigation path
+  /** Mutable game tree supporting main line + variations. */
   const [tree, setTree] = useState<GameTree>(() =>
     snapshots.length > 0
       ? buildFromMoves(snapshots[0].fen, initialSans)
       : { startFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', root: [] }
   );
+  /** Path into the tree — array of child indices at each depth. */
   const [path, setPath] = useState<number[]>([]);
   const [editMode, setEditMode] = useState(false);
   const [isBoardFlipped, setIsBoardFlipped] = useState(route.params?.flipped ?? false);
 
-  // Analysis state
+  // ── Analysis state ──────────────────────────────────────────────────
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  /** True while the bottom panel shows engine PV instead of game moves. */
   const [analysisMode, setAnalysisMode] = useState(false);
+  /** FEN that was sent to the engine (may differ from current display during PV playback). */
   const [analysisBaseFen, setAnalysisBaseFen] = useState<string | null>(null);
   const [analysisBaseDepth, setAnalysisBaseDepth] = useState(0);
+  /** When non-null, overrides gameFen for board display (used during PV playback). */
   const [displayFen, setDisplayFen] = useState<string | null>(null);
 
   const {
@@ -112,11 +145,13 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     resetPlayback,
   } = useAnalysisPlayback(analysisBaseFen);
 
+  // Best-move arrow — only show while in analysis mode
   const arrowFrom = analysisMode ? pvArrowFrom : null;
   const arrowTo = analysisMode ? pvArrowTo : null;
 
   const chessboardRef = useRef<ChessboardRef>(null);
 
+  // Bail out if no snapshots were provided
   useEffect(() => {
     if (!snapshots.length) {
       Alert.alert('No Data', 'No frames were captured.');
@@ -124,27 +159,30 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     }
   }, [snapshots.length, navigation]);
 
-  // Derived values from tree + path
+  // ── Derived values from tree + path ─────────────────────────────────
+
   const gameFen = getFenAtPath(tree, path);
+  /** Board shows PV playback FEN when available, otherwise the game position. */
   const currentFen = displayFen ?? gameFen;
   const currentDepth = path.length;
   const totalMainLine = getMainLineLength(tree);
   const lineLen = getLineLength(tree, path);
 
-  // Strip labels
+  // Labels for the MoveStrip component (previous / current / next SAN)
   const currSan = getSanAtPath(tree, path);
   const prevSan = path.length >= 2 ? getSanAtPath(tree, path.slice(0, -1)) : null;
   const nextChildren = getChildrenAtPath(tree, path);
   const nextSan = nextChildren.length > 0 ? nextChildren[0].san : null;
 
-  // Variation chips for MoveStrip
+  /** Chips for branching variations at the current node. */
   const variationChips: VariationChip[] = useMemo(
     () => nextChildren.map((c, i) => ({ san: c.san, childIndex: i })),
     [nextChildren],
   );
 
-  // ── Navigation — path-based ──
+  // ── Navigation — path-based ─────────────────────────────────────────
 
+  /** Exits analysis mode, resets PV playback, and clears overrides. */
   const exitAnalysis = useCallback(() => {
     setAnalysisMode(false);
     resetPlayback();
@@ -153,6 +191,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     setDisplayFen(null);
   }, [resetPlayback]);
 
+  /** Jumps to an arbitrary tree path, exits analysis, and syncs the board. */
   const navigateTo = useCallback((newPath: number[]) => {
     setPath(newPath);
     exitAnalysis();
@@ -160,19 +199,23 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     chessboardRef.current?.resetBoard(fen);
   }, [tree, exitAnalysis]);
 
+  /** Steps one move forward along the current branch (child index 0). */
   const goForward = useCallback(() => {
     const children = getChildrenAtPath(tree, path);
     if (children.length === 0) { return; }
     navigateTo([...path, 0]);
   }, [tree, path, navigateTo]);
 
+  /** Steps one move backward (pops the last index from path). */
   const goBack = useCallback(() => {
     if (path.length === 0) { return; }
     navigateTo(path.slice(0, -1));
   }, [path, navigateTo]);
 
+  /** Jumps to the starting position (empty path). */
   const goFirst = useCallback(() => navigateTo([]), [navigateTo]);
 
+  /** Walks down child-0 at every node until the end of the line. */
   const goLast = useCallback(() => {
     let p = [...path];
     let children = getChildrenAtPath(tree, p);
@@ -183,11 +226,14 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     navigateTo(p);
   }, [tree, path, navigateTo]);
 
+  /** Enters a specific variation branch at the current node. */
   const handleSelectVariation = useCallback((childIndex: number) => {
     navigateTo([...path, childIndex]);
   }, [path, navigateTo]);
 
-  // PV stepping — also animates
+  // ── PV playback stepping ────────────────────────────────────────────
+
+  /** Steps the PV playback to a specific index and updates the board. */
   const handlePvStep = useCallback((targetIndex: number) => {
     stepToIndex(targetIndex, (nextFen) => {
       setDisplayFen(nextFen);
@@ -199,7 +245,9 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
   const handlePlaybackBackward = useCallback(() => handlePvStep(pvIndex - 1), [pvIndex, handlePvStep]);
   const handlePlaybackReset = useCallback(() => handlePvStep(0), [handlePvStep]);
 
-  // Analyze current position → enter analysis mode
+  // ── Engine analysis ─────────────────────────────────────────────────
+
+  /** Sends the current game FEN to the engine and enters analysis mode. */
   const handleAnalyze = useCallback(async () => {
     if (!gameFen) { return; }
     try {
@@ -221,7 +269,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     }
   }, [gameFen, currentDepth, setAnalysisResult, setPvIndex]);
 
-  // Return to game from analysis mode
+  /** Leaves analysis mode and resets the board to the game position. */
   const handleReturnToGame = useCallback(() => {
     exitAnalysis();
     if (gameFen) {
@@ -229,13 +277,15 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     }
   }, [gameFen, exitAnalysis]);
 
-  // Save & Export
+  // ── Save & Export ───────────────────────────────────────────────────
+
   const { user } = useAuth();
   const [saving, setSaving] = useState(false);
   const [saveModalVisible, setSaveModalVisible] = useState(false);
   const defaultTitle = `Game – ${new Date().toLocaleDateString()}`;
   const mainLineMoves = useMemo(() => getMainLine(tree), [tree]);
 
+  /** Opens the save-title modal (requires sign-in). */
   const handleSavePress = useCallback(() => {
     if (!user) {
       Alert.alert('Sign In Required', 'Please sign in from the home screen to save games.');
@@ -245,6 +295,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     setSaveModalVisible(true);
   }, [user, snapshots]);
 
+  /** Persists the main line to the user's game library. */
   const handleSaveConfirm = useCallback(async (title: string) => {
     setSaveModalVisible(false);
     setSaving(true);
@@ -270,6 +321,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     }
   }, [tree]);
 
+  /** Builds a numbered PGN string and opens the Lichess paste URL. */
   const handleExport = useCallback(() => {
     if (!mainLineMoves.length) {
       Alert.alert('No Moves', 'No moves to export.');
@@ -277,10 +329,12 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     }
     const pgn = mainLineMoves.map((m, i) => (i % 2 === 0 ? `${Math.floor(i / 2) + 1}. ${m}` : m)).join(' ');
     const url = `https://lichess.org/paste?pgn=${encodeURIComponent(pgn)}`;
-    Linking.openURL(url);
+    Linking.openURL(url).catch(() => {});
   }, [mainLineMoves]);
 
-  // Flip board (pieces stay upright via renderPiece counter-rotation)
+  // ── Board rendering ─────────────────────────────────────────────────
+
+  // Flip transform — pieces stay upright via renderPiece counter-rotation
   const boardTransformStyle = useMemo(
     () => ({ transform: [{ rotate: isBoardFlipped ? '180deg' : '0deg' }] }),
     [isBoardFlipped],
@@ -288,7 +342,13 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
 
   const renderChessPiece = useRenderPiece(boardSize, isBoardFlipped);
 
-  // Edit mode handlers
+  // ── Edit mode handlers ──────────────────────────────────────────────
+
+  /**
+   * Called when the user drags a piece in edit mode.
+   * Matches the resulting FEN against legal moves to find the SAN,
+   * then inserts it into the game tree (creating a variation if needed).
+   */
   const handleEditMove = useCallback((info: any) => {
     const fen = info?.state?.fen;
     if (!fen) { return; }
@@ -314,6 +374,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     setPath(result.path);
   }, [tree, path]);
 
+  /** Asks for confirmation then removes all moves after the current position. */
   const handleTruncate = useCallback(() => {
     Alert.alert('Truncate', 'Remove all moves after this position?', [
       { text: 'Cancel', style: 'cancel' },
@@ -321,6 +382,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     ]);
   }, [tree, path]);
 
+  /** Deletes a non-main-line variation branch (with confirmation). */
   const handleDeleteVariation = useCallback(() => {
     if (path.length === 0) { return; }
     const lastIdx = path[path.length - 1];
@@ -339,6 +401,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     ]);
   }, [tree, path]);
 
+  /** Swaps a side-line with the main line at the branch point. */
   const handlePromoteVariation = useCallback(() => {
     if (path.length === 0) { return; }
     const lastIdx = path[path.length - 1];
@@ -349,9 +412,13 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     setPath(newPath);
   }, [tree, path]);
 
-  // Status flags for edit toolbar
+  // ── Status flags for edit toolbar ───────────────────────────────────
+
+  /** True when the current path ends on a side-line (not child 0). */
   const isOnVariation = path.length > 0 && path[path.length - 1] > 0;
   const hasChildren = nextChildren.length > 0;
+
+  // ── Render ─────────────────────────────────────────────────────────
 
   return (
     <SafeAreaView style={styles.container}>
@@ -383,7 +450,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
         </View>
       )}
 
-      {/* Toolbar: flip + edit + analyze/return */}
+      {/* Primary toolbar: flip / edit toggle / analyze (or return) */}
       <View style={styles.toolbarRow}>
         <FlipToggle isFlipped={isBoardFlipped} onChange={setIsBoardFlipped} />
 
@@ -415,7 +482,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
         )}
       </View>
 
-      {/* Edit toolbar: truncate / promote / delete */}
+      {/* Edit toolbar: truncate / promote / delete (only in edit mode) */}
       {editMode && !analysisMode && (
         <View style={styles.toolbarRow}>
           <TouchableOpacity
@@ -442,7 +509,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
         </View>
       )}
 
-      {/* Save / Export row */}
+      {/* Save / Export / Challenge row (hidden during edit & analysis) */}
       {!analysisMode && !editMode && (
         <View style={styles.toolbarRow}>
           <TouchableOpacity
@@ -462,13 +529,19 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.toolbarButton, styles.challengeButton]}
-            onPress={() => navigation.navigate('Friends', {challengeFen: gameFen})}>
+            onPress={() => {
+              if (!user) {
+                Alert.alert('Sign In Required', 'Please sign in from the home screen to challenge friends.');
+                return;
+              }
+              navigation.navigate('Friends', {challengeFen: gameFen});
+            }}>
             <Text style={styles.toolbarButtonText}>⚔️ Challenge</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* Record from position — full-width, same style as Analysis screen */}
+      {/* Record from this position (hidden during edit & analysis) */}
       {!analysisMode && !editMode && (
         <View style={styles.recordRow}>
           <TouchableOpacity
@@ -479,7 +552,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
         </View>
       )}
 
-      {/* Analysis PV panel (shown in analysis mode) */}
+      {/* Engine PV panel (analysis mode only) */}
       {analysisMode && primaryLine && (
         <AnalysisPanel
           primaryLine={primaryLine}
@@ -495,7 +568,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
 
       {analysisError && <Text style={styles.analysisError}>{analysisError}</Text>}
 
-      {/* Move strip */}
+      {/* Move strip with variation chips (game mode only) */}
       {!analysisMode && (
         <MoveStrip
           prevLabel={prevSan}
@@ -511,7 +584,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
         />
       )}
 
-      {/* Navigation arrows */}
+      {/* First / Prev / Next / Last navigation (game mode only) */}
       {!analysisMode && (
         <GameNavRow
           canGoBack={path.length > 0}

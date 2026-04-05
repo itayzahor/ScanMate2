@@ -14,6 +14,7 @@ POST   /analyze_position/                  Stockfish evaluation of a FEN
 from __future__ import annotations
 
 import asyncio
+import argparse
 import logging
 import os
 import queue
@@ -43,7 +44,7 @@ from scripts.detectors import get_board_corners, get_piece_predictions, PIECE_CL
 from scripts.board_orientation import get_perspective_transform, orient_board_state_for_white
 from scripts.piece_mapping import map_pieces_to_board
 from scripts.fen_converter import convert_board_to_fen
-from scripts.gatekeeper import validate_frame, MotionDetector
+from scripts.gatekeeper import validate_frame, MotionDetector, corners_stable
 from scripts.board_mapper import warp_board_to_grid
 from scripts.change_tracker import resolve_move_from_changes
 from scripts.session_state import DEFAULT_STARTING_FEN, SessionState
@@ -206,16 +207,13 @@ _BUDGET_INIT = 5
 # Budget boost granted on a rejected → accepted gatekeeper transition.
 _BUDGET_BOOST = 4
 
-_DUMP_GAME_FRAMES = os.getenv("DUMP_GAME_FRAMES", "1").lower() in {"1", "true", "yes", "on"}
+_DUMP_GAME_FRAMES = False  # enabled via --debug flag
 _DUMP_GAME_FRAMES_DIR = Path(
     os.getenv(
         "DUMP_GAME_FRAMES_DIR",
         str(Path(__file__).resolve().parent / "runs" / "incoming_frames"),
     )
 )
-if _DUMP_GAME_FRAMES:
-    _DUMP_GAME_FRAMES_DIR.mkdir(parents=True, exist_ok=True)
-    logger.info("Game frame dumping enabled: %s", _DUMP_GAME_FRAMES_DIR)
 
 
 @dataclass
@@ -240,6 +238,7 @@ class _GameSession:
     # consumed by a dedicated worker thread.
     frame_queue: queue.Queue = field(default_factory=queue.Queue)
     prev_rejected: bool = False  # was previous frame rejected by gatekeeper?
+    ref_corners: Optional[np.ndarray] = None  # reference ordered corners for stability check
     enqueued_count: int = 0  # total frames enqueued (for numbering)
     last_enqueue_time: float = 0.0  # monotonic timestamp of last enqueued frame
     _worker: Optional[Thread] = field(default=None, repr=False)
@@ -378,6 +377,15 @@ def _process_frame(game: _GameSession, image_bytes: bytes) -> dict:
     # Perspective transform + warp
     h_matrix, oriented_corners = get_perspective_transform(corners, img_resized)
     warped = warp_board_to_grid(img_resized, h_matrix, IMAGE_SIZE)
+
+    # Corner stability check — compare oriented corners to reference
+    if game.ref_corners is not None:
+        stable, max_disp, area_ratio = corners_stable(game.ref_corners, oriented_corners)
+        if not stable:
+            game.prev_rejected = True
+            print(f"[Frame {game.frame_count}] corner_shift rejected: max_disp={max_disp:.1f}px area_ratio={area_ratio:.2f}")
+            return {"status": "rejected", "fen": game.current_fen, "move_number": len(game.moves)}
+    game.ref_corners = oriented_corners.copy()
 
     # Stash geometry for sidecar dump (frame_viewer uses these)
     _frame_h_matrix = h_matrix.tolist() if hasattr(h_matrix, 'tolist') else h_matrix
@@ -615,19 +623,6 @@ async def end_game(game_id: str):
     )
 
 
-@app.get("/recognize_game/{game_id}/status")
-async def game_status(game_id: str):
-    """Lightweight progress query for the client loading screen."""
-    with _games_lock:
-        game = _games.get(game_id)
-    if game is None:
-        raise HTTPException(status_code=404, detail="Game not found")
-    return JSONResponse(content={
-        "enqueued": game.enqueued_count,
-        "processed": game.frame_count,
-    })
-
-
 @app.delete("/recognize_game/{game_id}/")
 async def discard_game(game_id: str):
     """Discard a game session without returning results."""
@@ -745,4 +740,13 @@ async def analyze_position(request: AnalysisRequest):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Chess Recognition Server")
+    parser.add_argument("--debug", action="store_true", help="Enable game frame dumping to runs/incoming_frames/")
+    args = parser.parse_args()
+
+    if args.debug:
+        _DUMP_GAME_FRAMES = True
+        _DUMP_GAME_FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+        logger.info("Game frame dumping enabled: %s", _DUMP_GAME_FRAMES_DIR)
+
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

@@ -41,13 +41,21 @@ DEFAULT_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 # ---------- SAN → UCI helper ----------
 
 def san_to_uci(fen: str, san: str) -> Optional[str]:
-    """Convert a SAN move to UCI given the position *before* the move."""
-    try:
-        board = chess.Board(fen)
-        move = board.parse_san(san)
-        return move.uci()
-    except Exception:
-        return None
+    """Convert a SAN move to UCI given the position *before* the move.
+
+    The stored FEN is piece-placement-only (no turn indicator), so
+    python-chess defaults to white's turn.  We try white first, then
+    black, so that moves from either side are resolved correctly.
+    """
+    placement = fen.split()[0]
+    for turn_char in ("w", "b"):
+        try:
+            board = chess.Board(f"{placement} {turn_char} - - 0 1")
+            move = board.parse_san(san)
+            return move.uci()
+        except Exception:
+            continue
+    return None
 
 
 def _get_previous_fen(frames, idx: int) -> str:

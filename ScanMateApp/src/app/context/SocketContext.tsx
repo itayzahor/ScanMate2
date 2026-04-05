@@ -87,7 +87,7 @@ export function SocketProvider({children}: {children: ReactNode}) {
           onGameInvited((invite: GameInvite) => {
             Alert.alert(
               'Game Challenge!',
-              `${invite.inviter.name} wants to play (you are ${invite.color})`,
+              `${invite.inviter.username ? `@${invite.inviter.username}` : invite.inviter.name} wants to play (you are ${invite.color})`,
               [
                 {
                   text: 'Decline',

@@ -1,3 +1,18 @@
+/**
+ * FriendsScreen.tsx — Friends list, search, requests, and challenge screen.
+ *
+ * Responsibilities:
+ *  - Displays the user's accepted friends, incoming requests, and
+ *    outgoing (pending) requests in a single sectioned FlatList.
+ *  - Provides a username search bar to find and send new friend requests.
+ *  - Each friend card has remove and challenge (⚔️) actions.
+ *  - Shows an active-game banner if a live game is in progress, with
+ *    options to continue, abandon, or cancel a pending invite.
+ *  - Opens a ChallengeModal to pick color before sending a game invite.
+ *  - Supports an optional challengeFen route param to pre-fill the
+ *    starting position when challenging from the Analysis/GameReview screen.
+ */
+
 import React, {useCallback, useEffect, useState} from 'react';
 import {
   View,
@@ -5,7 +20,6 @@ import {
   FlatList,
   TouchableOpacity,
   TextInput,
-  StyleSheet,
   Alert,
   ActivityIndicator,
   Image,
@@ -28,37 +42,59 @@ import {
 import {ChallengeModal} from '../../ui/components/ChallengeModal';
 import {sendInvite, abandonGame, cancelInvite} from '../../services/liveGame';
 import {useSocket} from '../context/SocketContext';
+import {styles} from '../../ui/styles/FriendsScreen.styles';
+
+// ── Helpers ──────────────────────────────────────────────────────────
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Friends'>;
 
+/**
+ * Extracts the "other" user from a FriendshipRecord.
+ * If the current user is the requester, returns the recipient and vice-versa.
+ */
 const userFromRecord = (record: FriendshipRecord, myId: string): FriendUser => {
   const req = record.requester as FriendUser;
   const rec = record.recipient as FriendUser;
-  // For accepted friends, return the other person
   if (req._id === myId) {
     return rec;
   }
   return req;
 };
 
+// ── Component ────────────────────────────────────────────────────────
+
+/**
+ * Social hub screen — browse friends, manage requests, search users,
+ * and send game challenges.
+ */
 export const FriendsScreen = ({navigation, route}: Props) => {
   const {user} = useAuth();
   const {activeGame, setActiveGame} = useSocket();
+  /** Optional FEN passed from Analysis/GameReview to pre-fill a challenge. */
   const challengeFen = (route.params as any)?.challengeFen as string | undefined;
+
+  // ── Data state ──────────────────────────────────────────────────
+
   const [data, setData] = useState<FriendsData>({friends: [], incoming: [], outgoing: []});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Search state
+  // ── Search state ────────────────────────────────────────────────
+
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<FriendUser[]>([]);
   const [searching, setSearching] = useState(false);
+  /** ID of the user currently receiving a friend request (loading guard). */
   const [sendingTo, setSendingTo] = useState<string | null>(null);
 
-  // Challenge state
+  // ── Challenge state ─────────────────────────────────────────────
+
   const [challengeTarget, setChallengeTarget] = useState<FriendUser | null>(null);
   const [challengeLoading, setChallengeLoading] = useState(false);
 
+  // ── Data fetching ───────────────────────────────────────────────
+
+  /** Loads friends, incoming, and outgoing requests from the server. */
   const fetchData = useCallback(async () => {
     try {
       const result = await getFriends();
@@ -76,12 +112,16 @@ export const FriendsScreen = ({navigation, route}: Props) => {
     })();
   }, [fetchData]);
 
+  /** Pull-to-refresh handler. */
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchData();
     setRefreshing(false);
   }, [fetchData]);
 
+  // ── Search handlers ─────────────────────────────────────────────
+
+  /** Searches users by username (min 2 characters). */
   const handleSearch = useCallback(async () => {
     const trimmed = searchQuery.trim();
     if (trimmed.length < 2) {
@@ -102,11 +142,12 @@ export const FriendsScreen = ({navigation, route}: Props) => {
     }
   }, [searchQuery]);
 
+  /** Sends a friend request and removes the user from search results. */
   const handleSendRequest = useCallback(async (target: FriendUser) => {
     setSendingTo(target._id);
     try {
       await sendFriendRequest(target._id);
-      Alert.alert('Sent!', `Friend request sent to ${target.name}`);
+      Alert.alert('Sent!', `Friend request sent to @${target.username ?? target.name}`);
       setSearchResults(prev => prev.filter(u => u._id !== target._id));
       await fetchData();
     } catch (err: any) {
@@ -116,6 +157,9 @@ export const FriendsScreen = ({navigation, route}: Props) => {
     }
   }, [fetchData]);
 
+  // ── Friend-request handlers ─────────────────────────────────────
+
+  /** Accepts an incoming friend request. */
   const handleAccept = useCallback(
     async (id: string) => {
       try {
@@ -128,6 +172,7 @@ export const FriendsScreen = ({navigation, route}: Props) => {
     [fetchData],
   );
 
+  /** Rejects an incoming friend request. */
   const handleReject = useCallback(
     async (id: string) => {
       try {
@@ -140,6 +185,7 @@ export const FriendsScreen = ({navigation, route}: Props) => {
     [fetchData],
   );
 
+  /** Confirms and removes an existing friend. */
   const handleRemove = useCallback(
     (record: FriendshipRecord) => {
       const other = userFromRecord(record, user?.id ?? '');
@@ -162,6 +208,9 @@ export const FriendsScreen = ({navigation, route}: Props) => {
     [user, fetchData],
   );
 
+  // ── Challenge handler ───────────────────────────────────────────
+
+  /** Sends a game invite with the chosen color (and optional starting FEN). */
   const handleChallenge = useCallback(async (color: 'white' | 'black') => {
     if (!challengeTarget) return;
     setChallengeLoading(true);
@@ -175,6 +224,8 @@ export const FriendsScreen = ({navigation, route}: Props) => {
       setChallengeLoading(false);
     }
   }, [challengeTarget, challengeFen]);
+
+  // ── Early returns ───────────────────────────────────────────────
 
   if (!user) {
     return (
@@ -192,6 +243,8 @@ export const FriendsScreen = ({navigation, route}: Props) => {
     );
   }
 
+  // ── List data preparation ───────────────────────────────────────
+
   const sections: {title: string; data: any[]; type: string}[] = [];
 
   if (data.incoming.length > 0) {
@@ -204,7 +257,7 @@ export const FriendsScreen = ({navigation, route}: Props) => {
     sections.push({title: 'Friends', data: data.friends, type: 'friends'});
   }
 
-  // Flatten into a FlatList-friendly array
+  // Flatten sections into a FlatList-friendly array with header items
   type ListItem =
     | {kind: 'header'; title: string; key: string}
     | {kind: 'row'; record: FriendshipRecord; type: string; key: string};
@@ -217,6 +270,9 @@ export const FriendsScreen = ({navigation, route}: Props) => {
     }
   }
 
+  // ── Render helpers ──────────────────────────────────────────────
+
+  /** Renders a user avatar (Google picture or initial letter fallback). */
   const renderAvatar = (u: FriendUser) =>
     u.picture ? (
       <Image source={{uri: u.picture}} style={styles.avatar} />
@@ -226,6 +282,7 @@ export const FriendsScreen = ({navigation, route}: Props) => {
       </View>
     );
 
+  /** Renders a single list item (section header or user card). */
   const renderItem = ({item}: {item: ListItem}) => {
     if (item.kind === 'header') {
       return <Text style={styles.sectionHeader}>{item.title}</Text>;
@@ -241,7 +298,7 @@ export const FriendsScreen = ({navigation, route}: Props) => {
             {renderAvatar(from)}
             <View style={styles.cardTextWrapper}>
               <Text style={styles.cardName}>{from.name}</Text>
-              <Text style={styles.cardEmail}>{from.email}</Text>
+              <Text style={styles.cardEmail}>@{from.username ?? from.email}</Text>
             </View>
           </View>
           <View style={styles.actionRow}>
@@ -268,7 +325,7 @@ export const FriendsScreen = ({navigation, route}: Props) => {
             {renderAvatar(to)}
             <View style={styles.cardTextWrapper}>
               <Text style={styles.cardName}>{to.name}</Text>
-              <Text style={styles.cardEmail}>{to.email}</Text>
+              <Text style={styles.cardEmail}>@{to.username ?? to.email}</Text>
             </View>
             <Text style={styles.pendingBadge}>Pending</Text>
           </View>
@@ -276,19 +333,21 @@ export const FriendsScreen = ({navigation, route}: Props) => {
       );
     }
 
-    // friends
+    // Accepted friends — show remove + challenge buttons
     const other = userFromRecord(record, user.id);
     return (
-      <TouchableOpacity
-        style={styles.card}
-        activeOpacity={0.8}
-        onLongPress={() => handleRemove(record)}>
+      <View style={styles.card}>
         <View style={styles.cardRow}>
           {renderAvatar(other)}
           <View style={styles.cardTextWrapper}>
             <Text style={styles.cardName}>{other.name}</Text>
-            <Text style={styles.cardEmail}>{other.email}</Text>
+            <Text style={styles.cardEmail}>@{other.username ?? other.email}</Text>
           </View>
+          <TouchableOpacity
+            style={styles.removeFriendBtn}
+            onPress={() => handleRemove(record)}>
+            <Text style={styles.removeFriendIcon}>✕</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.challengeBtn, activeGame && styles.challengeBtnDisabled]}
             disabled={!!activeGame}
@@ -296,9 +355,11 @@ export const FriendsScreen = ({navigation, route}: Props) => {
             <Text style={styles.challengeIcon}>⚔️</Text>
           </TouchableOpacity>
         </View>
-      </TouchableOpacity>
+      </View>
     );
   };
+
+  // ── Main render ─────────────────────────────────────────────────
 
   return (
     <View style={styles.container}>
@@ -308,7 +369,7 @@ export const FriendsScreen = ({navigation, route}: Props) => {
 
       <Text style={styles.heading}>Friends</Text>
 
-      {/* Active game banner */}
+      {/* Active game banner — tap to continue, long-press to abandon */}
       {activeGame && (activeGame.status === 'active' || activeGame.status === 'pending') && (
         <TouchableOpacity
           style={styles.activeGameBanner}
@@ -341,8 +402,8 @@ export const FriendsScreen = ({navigation, route}: Props) => {
           <Text style={styles.activeGameText}>
             ⚔️ Game in progress vs{' '}
             {activeGame.whitePlayer._id === user?.id
-              ? activeGame.blackPlayer.name
-              : activeGame.whitePlayer.name}
+              ? (activeGame.blackPlayer.username ? `@${activeGame.blackPlayer.username}` : activeGame.blackPlayer.name)
+              : (activeGame.whitePlayer.username ? `@${activeGame.whitePlayer.username}` : activeGame.whitePlayer.name)}
           </Text>
           {activeGame.status === 'active' && (
             <Text style={styles.continueText}>Continue →</Text>
@@ -382,11 +443,11 @@ export const FriendsScreen = ({navigation, route}: Props) => {
         </TouchableOpacity>
       )}
 
-      {/* Search bar */}
+      {/* Username search bar */}
       <View style={styles.searchRow}>
         <TextInput
           style={styles.searchInput}
-          placeholder="Search by name or email…"
+          placeholder="Search by username…"
           placeholderTextColor="#6b7a9e"
           value={searchQuery}
           onChangeText={setSearchQuery}
@@ -407,7 +468,7 @@ export const FriendsScreen = ({navigation, route}: Props) => {
         </TouchableOpacity>
       </View>
 
-      {/* Search results */}
+      {/* Search results — each with an add-friend button */}
       {searchResults.length > 0 && (
         <View style={styles.searchResultsWrapper}>
           {searchResults.map(u => (
@@ -416,7 +477,7 @@ export const FriendsScreen = ({navigation, route}: Props) => {
                 {renderAvatar(u)}
                 <View style={styles.cardTextWrapper}>
                   <Text style={styles.cardName}>{u.name}</Text>
-                  <Text style={styles.cardEmail}>{u.email}</Text>
+                  <Text style={styles.cardEmail}>@{u.username ?? u.email}</Text>
                 </View>
                 <TouchableOpacity
                   style={styles.addFriendBtn}
@@ -434,6 +495,7 @@ export const FriendsScreen = ({navigation, route}: Props) => {
         </View>
       )}
 
+      {/* Sectioned friends list (incoming / outgoing / accepted) */}
       <FlatList
         data={listItems}
         keyExtractor={item => item.key}
@@ -447,12 +509,13 @@ export const FriendsScreen = ({navigation, route}: Props) => {
             <Text style={styles.emptyIcon}>👥</Text>
             <Text style={styles.emptyText}>No friends yet</Text>
             <Text style={styles.emptySubtext}>
-              Search by email to send a friend request
+              Search by username to send a friend request
             </Text>
           </View>
         }
       />
 
+      {/* Challenge color-picker modal */}
       <ChallengeModal
         visible={!!challengeTarget}
         friend={challengeTarget}
@@ -464,259 +527,3 @@ export const FriendsScreen = ({navigation, route}: Props) => {
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0c111d',
-    paddingHorizontal: 24,
-    paddingTop: 48,
-  },
-  centered: {
-    flex: 1,
-    backgroundColor: '#0c111d',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  backButton: {
-    marginBottom: 16,
-  },
-  backText: {
-    color: '#91a0c7',
-    fontSize: 16,
-  },
-  heading: {
-    color: '#f5f7ff',
-    fontSize: 24,
-    fontWeight: '700',
-    marginBottom: 16,
-  },
-  activeGameBanner: {
-    backgroundColor: '#1a2a1a',
-    borderColor: '#2d5a2d',
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  activeGameText: {
-    color: '#a3e635',
-    fontSize: 15,
-    fontWeight: '600',
-    flex: 1,
-  },
-  continueText: {
-    color: '#4ade80',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  pendingGameText: {
-    color: '#91a0c7',
-    fontSize: 13,
-    fontStyle: 'italic',
-  },
-  cancelChallengeBtn: {
-    marginTop: 8,
-    backgroundColor: '#b71c1c',
-    borderRadius: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    alignSelf: 'flex-start',
-  },
-  cancelChallengeText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  // Search
-  searchRow: {
-    flexDirection: 'row',
-    marginBottom: 16,
-    gap: 8,
-  },
-  searchInput: {
-    flex: 1,
-    backgroundColor: '#141b2d',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    color: '#f5f7ff',
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-  },
-  searchBtn: {
-    backgroundColor: '#1c2b4b',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  searchBtnDisabled: {
-    opacity: 0.4,
-  },
-  searchBtnText: {
-    color: '#f5f7ff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  searchResultsWrapper: {
-    marginBottom: 12,
-  },
-  searchResultCard: {
-    backgroundColor: '#141b2d',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(76, 175, 80, 0.3)',
-  },
-  addFriendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#1c3a2a',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 8,
-  },
-  addFriendIcon: {
-    fontSize: 16,
-    color: '#4ade80',
-  },
-  challengeBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#2b1c4b',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 8,
-  },
-  challengeBtnDisabled: {
-    opacity: 0.35,
-  },
-  challengeIcon: {
-    fontSize: 18,
-  },
-  // List
-  list: {
-    paddingBottom: 40,
-  },
-  emptyList: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  sectionHeader: {
-    color: '#91a0c7',
-    fontSize: 13,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  card: {
-    backgroundColor: '#141b2d',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.04)',
-  },
-  cardRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    marginRight: 12,
-  },
-  avatarPlaceholder: {
-    backgroundColor: '#1c2b4b',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarLetter: {
-    color: '#f5f7ff',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  cardTextWrapper: {
-    flex: 1,
-  },
-  cardName: {
-    color: '#f5f7ff',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  cardEmail: {
-    color: '#91a0c7',
-    fontSize: 12,
-    marginTop: 1,
-  },
-  pendingBadge: {
-    color: '#f59e0b',
-    fontSize: 12,
-    fontWeight: '600',
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  // Action buttons
-  actionRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 10,
-  },
-  actionBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  acceptBtn: {
-    backgroundColor: '#1c3a2a',
-  },
-  rejectBtn: {
-    backgroundColor: '#3a1c1c',
-  },
-  acceptText: {
-    color: '#4ade80',
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  rejectText: {
-    color: '#f87171',
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  // Empty
-  emptyContainer: {
-    alignItems: 'center',
-    paddingTop: 80,
-  },
-  emptyIcon: {
-    fontSize: 48,
-    marginBottom: 16,
-  },
-  emptyText: {
-    color: '#f5f7ff',
-    fontSize: 18,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  emptySubtext: {
-    color: '#91a0c7',
-    fontSize: 14,
-    textAlign: 'center',
-  },
-});

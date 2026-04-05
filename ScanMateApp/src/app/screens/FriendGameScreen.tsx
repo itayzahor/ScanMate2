@@ -1,4 +1,16 @@
-// FriendGameScreen.tsx — Real-time chess game between friends
+/**
+ * FriendGameScreen.tsx — Real-time chess game between friends.
+ *
+ * Responsibilities:
+ *  - Loads a live game session from the server by gameId.
+ *  - Connects to socket events for moves, game-over, draw offers/declines.
+ *  - Renders the board from the correct perspective (white/black),
+ *    only enabling gestures on the player's own turn.
+ *  - Provides resign, draw-offer, save, and post-game review flows.
+ *  - Supports in-game move review (tap a move chip to jump back,
+ *    tap "Live" to return to the current position).
+ */
+
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   View,
@@ -11,7 +23,7 @@ import {
   SafeAreaView,
 } from 'react-native';
 import Chessboard, {ChessboardRef} from 'react-native-chessboard';
-import {Chess, PieceSymbol, Color} from 'chess.js';
+import {Chess} from 'chess.js';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
 import type {RootStackParamList} from '../../shared/types/navigation';
 import {useAuth} from '../context/AuthContext';
@@ -34,9 +46,22 @@ import {
 } from '../../services/liveGame';
 import {saveGame} from '../../services/games';
 import type {GameSnapshot} from '../../shared/types/game';
-import { useRenderPiece } from '../../shared/hooks/useRenderPiece';import {styles} from '../../ui/styles/FriendGame.styles';
+import { useRenderPiece } from '../../shared/hooks/useRenderPiece';
+import {styles} from '../../ui/styles/FriendGame.styles';
+
+// ── Types ────────────────────────────────────────────────────────────
+
 type Props = NativeStackScreenProps<RootStackParamList, 'FriendGame'>;
 
+// ── Component ────────────────────────────────────────────────────────
+
+/**
+ * Live multiplayer chess screen.
+ *
+ * Fetches the game state on mount, subscribes to real-time socket
+ * events, and manages the full lifecycle: playing → resign/draw →
+ * game-over → review/save.
+ */
 export const FriendGameScreen = ({navigation, route}: Props) => {
   const {gameId} = route.params as {gameId: string};
   const {user} = useAuth();
@@ -45,19 +70,24 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
   const chessboardRef = useRef<ChessboardRef>(null);
   const moveScrollRef = useRef<ScrollView>(null);
 
-  // Game state
+  // ── Game state ───────────────────────────────────────────────────
+
   const [game, setGame] = useState<LiveGame | null>(null);
+  /** Local chess.js instance kept in sync with the server FEN. */
   const [chess, setChess] = useState<Chess | null>(null);
   const [fen, setFen] = useState<string>('');
   const [moves, setMoves] = useState<string[]>([]);
-  const [reviewIndex, setReviewIndex] = useState<number | null>(null); // null = live
+  /** When non-null the board shows a past position (move review). */
+  const [reviewIndex, setReviewIndex] = useState<number | null>(null);
   const [gameOver, setGameOver] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [gameOverReason, setGameOverReason] = useState<string | null>(null);
   const [drawPending, setDrawPending] = useState(false);
   const [loadingGame, setLoadingGame] = useState(true);
 
-  // Derived
+  // ── Derived values ───────────────────────────────────────────────
+
+  /** Which color the local player controls (null if spectating). */
   const myColor: 'white' | 'black' | null = useMemo(() => {
     if (!game || !user) return null;
     if (game.whitePlayer._id === user.id) return 'white';
@@ -65,6 +95,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     return null;
   }, [game, user]);
 
+  /** Board is rotated 180° when the local player plays black. */
   const isFlipped = myColor === 'black';
 
   const opponent: LiveGamePlayer | null = useMemo(() => {
@@ -77,15 +108,17 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     return myColor === 'white' ? game.whitePlayer : game.blackPlayer;
   }, [game, myColor]);
 
+  /** True when it's the local player's turn and the game is still active. */
   const isMyTurn = useMemo(() => {
     if (!chess || !myColor || gameOver) return false;
     const turn = chess.turn(); // 'w' or 'b'
     return (turn === 'w' && myColor === 'white') || (turn === 'b' && myColor === 'black');
   }, [chess, myColor, gameOver]);
 
+  /** FEN to display — replays moves up to reviewIndex, or shows live FEN. */
   const currentFen = useMemo(() => {
     if (reviewIndex !== null && chess) {
-      // Rebuild fen at reviewIndex by replaying moves
+      // Rebuild FEN at the review position by replaying moves
       const temp = new Chess(game?.startingFen);
       for (let i = 0; i < reviewIndex; i++) {
         temp.move(moves[i]);
@@ -96,6 +129,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
   }, [reviewIndex, chess, fen, moves, game]);
 
   // ── Load game on mount ───────────────────────────────────────────
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -108,6 +142,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
         setResult(g.result ?? null);
         setGameOver(g.status === 'completed');
 
+        // Replay all existing moves into a local chess.js instance
         const c = new Chess(g.startingFen);
         for (const m of g.moves) c.move(m);
         setChess(c);
@@ -124,19 +159,20 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
   }, [gameId, navigation]);
 
   // ── Socket listeners ─────────────────────────────────────────────
+
   useEffect(() => {
     const unsubs: Array<() => void> = [];
 
     unsubs.push(
       onGameMoved((data: MoveResult) => {
         if (data.gameId !== gameId) return;
-        // Only update if fen actually changed (avoid duplicating own move)
+        // Only update if FEN actually changed (avoid duplicating own move)
         setFen(prevFen => {
           if (prevFen === data.fen) return prevFen; // already applied
           return data.fen;
         });
         setMoves(prev => {
-          // Guard: skip if last move already matches
+          // Guard: skip if last move already matches (de-duplication)
           if (prev.length > 0 && prev[prev.length - 1] === data.san) {
             // Check if fen matches to be sure
             return prev;
@@ -196,21 +232,23 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     return () => unsubs.forEach(fn => fn());
   }, [gameId]);
 
-  // Update chessboard when fen changes
+  // Sync chessboard widget when the displayed FEN changes
   useEffect(() => {
     if (currentFen) {
       chessboardRef.current?.resetBoard(currentFen);
     }
   }, [currentFen]);
 
-  // Scroll move list to end on new moves
+  // Auto-scroll the move strip to the latest move
   useEffect(() => {
     if (reviewIndex === null) {
       setTimeout(() => moveScrollRef.current?.scrollToEnd({animated: true}), 50);
     }
   }, [moves.length, reviewIndex]);
 
-  // ── Build snapshots from moves for GameReview ───────────────────
+  // ── Snapshot builder ─────────────────────────────────────────────
+
+  /** Replays the move list into an array of GameSnapshots for GameReview. */
   const buildSnapshots = useCallback((): GameSnapshot[] => {
     const startFen = game?.startingFen ?? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     const snaps: GameSnapshot[] = [{fen: startFen, timestamp: 0}];
@@ -222,6 +260,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     return snaps;
   }, [game, moves]);
 
+  /** Displays the game-over alert with Review / Home options. */
   const showGameOverAlert = useCallback((finalResult: string, reason?: string) => {
     let title = 'Game Over';
     let message = '';
@@ -255,14 +294,20 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     ]);
   }, [buildSnapshots, moves, myColor, navigation, setActiveGame]);
 
-  // Show game over alert when the game ends
+  // Trigger game-over alert when the game ends
   useEffect(() => {
     if (gameOver && result) {
       showGameOverAlert(result, gameOverReason ?? undefined);
     }
   }, [gameOver, result, gameOverReason, showGameOverAlert]);
 
-  // ── Handlers ─────────────────────────────────────────────────────
+  // ── Move handler ─────────────────────────────────────────────────
+
+  /**
+   * Called when the local player drags a piece.
+   * Finds the matching legal move, then emits it to the server.
+   * Board state is updated optimistically; the socket event confirms.
+   */
   const onMove = useCallback(
     (info: {state?: {fen?: string}}) => {
       if (!chess || !game || !isMyTurn || gameOver || reviewIndex !== null) return;
@@ -275,7 +320,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
       const legalMoves = tempBefore.moves({verbose: true});
       const tempAfter = new Chess(nextFen);
 
-      // Find the legal move that leads to nextFen
+      // Find the legal move leading to nextFen
       const match = legalMoves.find(m => {
         const t = new Chess(fen);
         t.move(m);
@@ -288,7 +333,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
         return;
       }
 
-      // Emit to server — state update comes via game:moved event
+      // Emit to server — board update arrives via game:moved socket event
       sendMove(gameId, match.from, match.to, match.promotion)
         .catch(err => {
           // Revert board
@@ -299,6 +344,9 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     [chess, game, isMyTurn, gameOver, reviewIndex, fen, gameId],
   );
 
+  // ── Game-action handlers ─────────────────────────────────────────
+
+  /** Confirms and sends a resignation to the server. */
   const handleResign = useCallback(() => {
     Alert.alert('Resign', 'Are you sure you want to resign?', [
       {text: 'Cancel', style: 'cancel'},
@@ -320,6 +368,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     ]);
   }, [gameId]);
 
+  /** Confirms and sends a draw offer. */
   const handleDrawOffer = useCallback(() => {
     Alert.alert('Offer Draw', 'Send a draw offer to your opponent?', [
       {text: 'Cancel', style: 'cancel'},
@@ -334,6 +383,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     ]);
   }, [gameId]);
 
+  /** Saves the game to the user's library. */
   const handleSaveGame = useCallback(async () => {
     try {
       await saveGame({
@@ -351,14 +401,17 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     }
   }, [moves, game, fen, result, opponent]);
 
+  /** Clears the active game and returns to the home screen. */
   const handleGoHome = useCallback(() => {
     setActiveGame(null);
     navigation.popToTop();
   }, [navigation, setActiveGame]);
 
   // ── Render helpers ───────────────────────────────────────────────
+
   const renderPiece = useRenderPiece(boardSize, isFlipped);
 
+  /** Renders a player info bar (avatar + name + turn badge). */
   const renderPlayerBar = (player: LiveGamePlayer | null, isTop: boolean) => (
     <View style={[styles.playerBar, isTop && styles.playerBarTop]}>
       {player?.picture ? (
@@ -369,7 +422,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
         </View>
       )}
       <Text style={styles.playerName} numberOfLines={1}>
-        {player?.name ?? 'Unknown'}
+        {player?.username ? `@${player.username}` : player?.name ?? 'Unknown'}
       </Text>
       {!isTop && isMyTurn && !gameOver && (
         <Text style={styles.turnBadge}>Your turn</Text>
@@ -380,6 +433,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     </View>
   );
 
+  /** Formats a SAN string with move number prefix for white's moves. */
   const formatMoveLabel = (san: string, idx: number) => {
     const moveNum = Math.floor(idx / 2) + 1;
     if (idx % 2 === 0) return `${moveNum}. ${san}`;
@@ -387,6 +441,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
   };
 
   // ── Loading state ────────────────────────────────────────────────
+
   if (loadingGame || !game || !chess) {
     return (
       <SafeAreaView style={styles.container}>
@@ -398,9 +453,11 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
     );
   }
 
+  // ── Main render ──────────────────────────────────────────────────
+
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
+      {/* Header with back button and result badge */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Text style={styles.backText}>← Back</Text>
@@ -413,7 +470,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
       {/* Opponent bar (top) */}
       {renderPlayerBar(opponent, true)}
 
-      {/* Chess board */}
+      {/* Chess board — flipped for black, gestures only on own turn */}
       <View
         style={[
           styles.boardWrapper,
@@ -430,10 +487,10 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
         />
       </View>
 
-      {/* My bar (bottom) */}
+      {/* My bar (bottom) — shows "Your turn" badge when applicable */}
       {renderPlayerBar(me, false)}
 
-      {/* Move history */}
+      {/* Move history strip — tap a chip to review, tap Live to return */}
       <ScrollView
         ref={moveScrollRef}
         horizontal
@@ -466,7 +523,7 @@ export const FriendGameScreen = ({navigation, route}: Props) => {
         )}
       </ScrollView>
 
-      {/* Action bar */}
+      {/* Action bar — game-over: Review/Save/Home | active: Resign/Draw */}
       <View style={styles.actionBar}>
         {gameOver ? (
           <>

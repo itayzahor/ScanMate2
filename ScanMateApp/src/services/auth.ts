@@ -9,6 +9,7 @@ export type AuthUser = {
   email: string;
   name: string;
   picture: string | null;
+  username: string | null;
 };
 
 type AuthResponse = {
@@ -60,6 +61,7 @@ export async function clearToken(): Promise<void> {
  */
 export async function signInWithGoogle(): Promise<{user: AuthUser; token: string}> {
   await GoogleSignin.hasPlayServices();
+  await GoogleSignin.signOut().catch(() => {});
   const response = await GoogleSignin.signIn();
 
   const idToken = response.data?.idToken;
@@ -108,6 +110,59 @@ export async function signOut(): Promise<void> {
     await GoogleSignin.signOut();
   } catch {
     // Google session may already be cleared
+  }
+  await clearToken();
+}
+
+/**
+ * Check if a username is available.
+ */
+export async function checkUsername(username: string): Promise<boolean> {
+  const token = await getToken();
+  const res = await fetch(
+    `${USER_API_URL}/api/auth/username/check?username=${encodeURIComponent(username)}`,
+    {headers: {Authorization: `Bearer ${token}`, Accept: 'application/json'}},
+  );
+  const json = await res.json();
+  if (!res.ok || !json.ok) {
+    throw new Error(json.error ?? 'Check failed');
+  }
+  return json.available;
+}
+
+/**
+ * Set or update the user's username.
+ */
+export async function updateUsername(username: string): Promise<AuthUser> {
+  const token = await getToken();
+  const res = await fetch(`${USER_API_URL}/api/auth/username`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({username}),
+  });
+  const json = await res.json();
+  if (!res.ok || !json.ok) {
+    throw new Error(json.error ?? 'Failed to update username');
+  }
+  return json.user;
+}
+
+/**
+ * Delete the user's account permanently.
+ */
+export async function deleteAccount(): Promise<void> {
+  const token = await getToken();
+  const res = await fetch(`${USER_API_URL}/api/auth/account`, {
+    method: 'DELETE',
+    headers: {Authorization: `Bearer ${token}`, Accept: 'application/json'},
+  });
+  const json = await res.json();
+  if (!res.ok || !json.ok) {
+    throw new Error(json.error ?? 'Failed to delete account');
   }
   await clearToken();
 }
