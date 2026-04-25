@@ -69,7 +69,22 @@ cd ..
    ML/engines/stockfish/stockfish-windows-x86-64-avx2.exe
    ```
 
-The model weights (`best.pt` files) are already included in the repo under `ML/runs/` — no separate download needed.
+The model weights (`best.pt` files) are **not stored in the repo** due to their size (~326 MB each).
+Download them by running the script from the `ML/` directory:
+
+```powershell
+cd ML
+.\download_models.ps1
+```
+
+This places the weights at the paths expected by the server:
+```
+ML/runs/corners_11x_640_v2/weights/best.pt
+ML/runs/pieces_11x_640_v1/weights/best.pt
+```
+
+> The script downloads from the [GitHub Releases](https://github.com/itayzahor/ScanMate2/releases) page.
+> If the automatic download fails, grab the files from there and place them manually.
 
 ---
 
