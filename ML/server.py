@@ -669,6 +669,22 @@ async def analyze_position(request: AnalysisRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid FEN: {exc}")
 
+    original_fen = request.fen
+
+    # If board metadata (castling/en-passant/clock fields) is stale after manual
+    # editing, keep placement + side-to-move and clear the rest as a safe fallback.
+    if not board.is_valid():
+        placement = board.board_fen()
+        turn = "w" if board.turn == chess.WHITE else "b"
+        sanitized_fen = f"{placement} {turn} - - 0 1"
+        try:
+            sanitized_board = chess.Board(sanitized_fen)
+        except ValueError:
+            sanitized_board = None
+
+        if sanitized_board is not None and sanitized_board.is_valid():
+            board = sanitized_board
+
     missing_kings = []
     if board.king(chess.WHITE) is None:
         missing_kings.append("white king")

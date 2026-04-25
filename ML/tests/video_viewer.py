@@ -13,6 +13,10 @@ Controls:
 
 terminal:
 python tests/video_viewer.py --video data/chessgame2.mp4 --frame-step 12
+
+python video_viewer.py --video data/chessgame.mp4 --frame-step 25 --start-frame 4500 --starting-fen "r1bqk2r/p4ppp/2pp4/2b1p3/8/3P1N2/PPP2PPP/R1BQK2R"
+
+python video_viewer.py --video data/chessgame.mp4 --frame-step 25 --start-frame 20000 --starting-fen "r5k1/p4pp1/7p/2p5/3r4/P7/5RPP/7K"
 """
 from __future__ import annotations
 

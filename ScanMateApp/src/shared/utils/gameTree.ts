@@ -14,6 +14,35 @@ export type GameTree = {
   root: MoveNode[];   // children of the start position
 };
 
+/**
+ * Resolve a legal SAN move from `fromFen` that results in the same piece placement as `targetFenOrPlacement`.
+ * This is useful when a UI emits placement-only FEN (without castling/en-passant fields).
+ */
+export const findMatchingSanForPlacement = (
+  fromFen: string,
+  targetFenOrPlacement: string,
+): string | null => {
+  try {
+    const chess = new Chess(normalizeFen(fromFen));
+    const targetPlacement = targetFenOrPlacement.trim().split(/\s+/)[0];
+    const legalMoves = chess.moves({ verbose: true });
+
+    for (const move of legalMoves) {
+      const test = new Chess(chess.fen());
+      const result = test.move({ from: move.from, to: move.to, promotion: move.promotion });
+      if (!result) { continue; }
+      const placement = test.fen().split(' ')[0];
+      if (placement === targetPlacement) {
+        return result.san;
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+};
+
 /* ── Build ── */
 
 export const buildFromMoves = (startFen: string, sans: string[]): GameTree => {
@@ -117,6 +146,25 @@ export const getLineLength = (tree: GameTree, path: number[]): number => {
 
 const cloneTree = (tree: GameTree): GameTree => JSON.parse(JSON.stringify(tree));
 
+const clonePathChildren = (tree: GameTree, path: number[]): MoveNode[] | null => {
+  const clonedRoot = [...tree.root];
+  let children = clonedRoot;
+
+  for (const idx of path) {
+    if (idx < 0 || idx >= children.length) {
+      return null;
+    }
+
+    const current = children[idx];
+    const clonedNode: MoveNode = { ...current, children: [...current.children] };
+    children[idx] = clonedNode;
+    children = clonedNode.children;
+  }
+
+  tree.root = clonedRoot;
+  return children;
+};
+
 /**
  * Add a move (by SAN) at the given path position.
  * - If the SAN already exists as a child there, return the path to it (no duplication).
@@ -132,10 +180,11 @@ export const addMove = (
   const result = chess.move(san);
   if (!result) { return { tree, path }; }
 
-  const newTree = cloneTree(tree);
-  const children = path.length === 0
-    ? newTree.root
-    : getNodeAtPath(newTree, path)!.children;
+  const newTree: GameTree = { startFen: tree.startFen, root: tree.root };
+  const children = clonePathChildren(newTree, path);
+  if (!children) {
+    return { tree, path };
+  }
 
   // Check if this move already exists as a child.
   const existingIdx = children.findIndex(c => c.san === result.san);
@@ -150,13 +199,17 @@ export const addMove = (
 
 /** Remove all children at the given path position (truncate the line). */
 export const truncateAfter = (tree: GameTree, path: number[]): GameTree => {
-  const newTree = cloneTree(tree);
   if (path.length === 0) {
-    newTree.root = [];
-    return newTree;
+    return { startFen: tree.startFen, root: [] };
   }
-  const node = getNodeAtPath(newTree, path);
-  if (node) { node.children = []; }
+
+  const newTree: GameTree = { startFen: tree.startFen, root: tree.root };
+  const children = clonePathChildren(newTree, path);
+  if (!children) {
+    return tree;
+  }
+  children.length = 0;
+
   return newTree;
 };
 

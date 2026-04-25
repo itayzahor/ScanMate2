@@ -7,7 +7,7 @@
  *  - Provides step-through navigation (first / prev / next / last) plus
  *    a MoveStrip showing context around the current position.
  *  - Edit mode lets the user drag pieces to add new moves / variations,
- *    truncate the line, promote or delete variation branches.
+ *    and truncate the line from the current position.
  *  - "Analyze" sends the current FEN to the engine and enters analysis
  *    mode with PV playback and a best-move arrow overlay.
  *  - Save (to user library), Export (Lichess PGN paste), and Challenge
@@ -19,6 +19,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  InteractionManager,
   Linking,
   SafeAreaView,
   Text,
@@ -27,7 +28,7 @@ import {
   Alert,
 } from 'react-native';
 import Chessboard, { ChessboardRef } from 'react-native-chessboard';
-import { Chess, Move } from 'chess.js';
+import { Chess } from 'chess.js';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import { styles } from '../../ui/styles/GameReview.styles';
@@ -40,7 +41,6 @@ import { GameNavRow } from '../../ui/components/GameNavRow';
 import { AnalysisPanel } from '../../ui/components/AnalysisPanel';
 import { analyzePosition } from '../../services/api';
 import { getBoardSize } from '../../shared/constants/layout';
-import { normalizeFen } from '../../shared/utils/fen';
 import { useAuth } from '../context/AuthContext';
 import { saveGame } from '../../services/games';
 import { SaveTitleModal } from '../../ui/components/SaveTitleModal';
@@ -55,8 +55,7 @@ import {
   getMainLineLength,
   addMove,
   truncateAfter,
-  deleteVariation,
-  promoteVariation,
+  findMatchingSanForPlacement,
 } from '../../shared/utils/gameTree';
 import { useRenderPiece } from '../../shared/hooks/useRenderPiece';
 import { useAnalysisPlayback } from '../../shared/hooks/useAnalysisPlayback';
@@ -71,15 +70,8 @@ import { useAnalysisPlayback } from '../../shared/hooks/useAnalysisPlayback';
 const deriveMoveSan = (previous: string, next: string): string => {
   if (!previous) { return 'Start Position'; }
   try {
-    const chess = new Chess(previous);
-    const moves = chess.moves({ verbose: true }) as Move[];
-    for (const move of moves) {
-      const cloned = new Chess(previous);
-      const result = cloned.move({ from: move.from, to: move.to, promotion: move.promotion });
-      if (result && normalizeFen(cloned.fen()) === normalizeFen(next)) {
-        return result.san;
-      }
-    }
+    const san = findMatchingSanForPlacement(previous, next);
+    if (san) { return san; }
   } catch (error) {
     console.warn('[GameReview] Failed to derive SAN', error);
   }
@@ -171,7 +163,7 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
   // Labels for the MoveStrip component (previous / current / next SAN)
   const currSan = getSanAtPath(tree, path);
   const prevSan = path.length >= 2 ? getSanAtPath(tree, path.slice(0, -1)) : null;
-  const nextChildren = getChildrenAtPath(tree, path);
+  const nextChildren = useMemo(() => getChildrenAtPath(tree, path), [tree, path]);
   const nextSan = nextChildren.length > 0 ? nextChildren[0].san : null;
 
   /** Chips for branching variations at the current node. */
@@ -350,28 +342,28 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
    * then inserts it into the game tree (creating a variation if needed).
    */
   const handleEditMove = useCallback((info: any) => {
-    const fen = info?.state?.fen;
-    if (!fen) { return; }
-    const currentBoardFen = getFenAtPath(tree, path);
-    const chess = new Chess(currentBoardFen);
-    const legalMoves = chess.moves({ verbose: true }) as Move[];
+    // The board resolves the move itself — from/to/san/promotion are authoritative.
+    // Using them directly avoids all FEN-comparison issues (captures, en passant,
+    // castling, promotions) that arise when inferring a move from a placement string.
+    const san: string | undefined = info?.move?.san;
+    if (!san) { return; }
 
-    let san: string | null = null;
-    for (const move of legalMoves) {
-      const test = new Chess(currentBoardFen);
-      const result = test.move({ from: move.from, to: move.to, promotion: move.promotion });
-      if (result && normalizeFen(test.fen()) === normalizeFen(fen)) {
-        san = result.san;
-        break;
+    const capturedTree = tree;
+    const capturedPath = path;
+    const currentBoardFen = getFenAtPath(capturedTree, capturedPath);
+
+    // Defer tree mutation until after the board's drop animation so the piece
+    // snaps instantly and the state update happens in the background.
+    InteractionManager.runAfterInteractions(() => {
+      const result = addMove(capturedTree, capturedPath, san);
+      if (result.tree === capturedTree) {
+        // addMove returned the same tree — move was already present or illegal.
+        chessboardRef.current?.resetBoard(currentBoardFen);
+        return;
       }
-    }
-    if (!san) {
-      chessboardRef.current?.resetBoard(currentBoardFen);
-      return;
-    }
-    const result = addMove(tree, path, san);
-    setTree(result.tree);
-    setPath(result.path);
+      setTree(result.tree);
+      setPath(result.path);
+    });
   }, [tree, path]);
 
   /** Asks for confirmation then removes all moves after the current position. */
@@ -382,40 +374,8 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
     ]);
   }, [tree, path]);
 
-  /** Deletes a non-main-line variation branch (with confirmation). */
-  const handleDeleteVariation = useCallback(() => {
-    if (path.length === 0) { return; }
-    const lastIdx = path[path.length - 1];
-    if (lastIdx === 0) {
-      Alert.alert('Cannot Delete', 'This is the main line. Promote another variation first.');
-      return;
-    }
-    Alert.alert('Delete Variation', 'Delete this variation branch?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => {
-        const result = deleteVariation(tree, path);
-        setTree(result.tree);
-        setPath(result.path);
-        chessboardRef.current?.resetBoard(getFenAtPath(result.tree, result.path));
-      }},
-    ]);
-  }, [tree, path]);
-
-  /** Swaps a side-line with the main line at the branch point. */
-  const handlePromoteVariation = useCallback(() => {
-    if (path.length === 0) { return; }
-    const lastIdx = path[path.length - 1];
-    if (lastIdx === 0) { return; }
-    const newTree = promoteVariation(tree, path);
-    const newPath = [...path.slice(0, -1), 0];
-    setTree(newTree);
-    setPath(newPath);
-  }, [tree, path]);
-
   // ── Status flags for edit toolbar ───────────────────────────────────
 
-  /** True when the current path ends on a side-line (not child 0). */
-  const isOnVariation = path.length > 0 && path[path.length - 1] > 0;
   const hasChildren = nextChildren.length > 0;
 
   // ── Render ─────────────────────────────────────────────────────────
@@ -450,16 +410,16 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
         </View>
       )}
 
-      {/* Primary toolbar: flip / edit toggle / analyze (or return) */}
+      {/* Primary toolbar: flip toggle + analyze (or return). */}
       <View style={styles.toolbarRow}>
         <FlipToggle isFlipped={isBoardFlipped} onChange={setIsBoardFlipped} />
 
-        {!analysisMode && (
+        {!analysisMode && !editMode && (
           <TouchableOpacity
-            style={[styles.toolbarButton, editMode && styles.editButtonActive]}
-            onPress={() => setEditMode(e => !e)}
+            style={[styles.toolbarButton, styles.editButtonActive]}
+            onPress={() => setEditMode(true)}
           >
-            <Text style={styles.toolbarButtonText}>{editMode ? '✅ Done' : '✏️ Edit'}</Text>
+            <Text style={styles.toolbarButtonText}>✏️ Edit</Text>
           </TouchableOpacity>
         )}
 
@@ -482,29 +442,22 @@ export const GameReview = ({ route, navigation }: GameReviewProps) => {
         )}
       </View>
 
-      {/* Edit toolbar: truncate / promote / delete (only in edit mode) */}
-      {editMode && !analysisMode && (
+      {/* Edit controls row: Done + Truncate in edit mode. */}
+
+      {!analysisMode && editMode && (
         <View style={styles.toolbarRow}>
+          <TouchableOpacity
+            style={[styles.toolbarButton, styles.editButtonActive]}
+            onPress={() => setEditMode(false)}
+          >
+            <Text style={styles.toolbarButtonText}>✅ Done</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.toolbarButton, styles.truncateButton, !hasChildren && styles.analyzeButtonDisabled]}
             disabled={!hasChildren}
             onPress={handleTruncate}
           >
             <Text style={styles.toolbarButtonText}>✂ Truncate</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.toolbarButton, styles.promoteButton, !isOnVariation && styles.analyzeButtonDisabled]}
-            disabled={!isOnVariation}
-            onPress={handlePromoteVariation}
-          >
-            <Text style={styles.toolbarButtonText}>⬆ Promote</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.toolbarButton, styles.deleteButton, !isOnVariation && styles.analyzeButtonDisabled]}
-            disabled={!isOnVariation}
-            onPress={handleDeleteVariation}
-          >
-            <Text style={styles.toolbarButtonText}>🗑 Delete</Text>
           </TouchableOpacity>
         </View>
       )}

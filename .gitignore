@@ -16,5 +16,11 @@ node_modules
 .env
 .DS_Store
 ML/runs/*/
+!ML/runs/corners_11x_640_v2/
+!ML/runs/corners_11x_640_v2/weights/
+!ML/runs/corners_11x_640_v2/weights/best.pt
+!ML/runs/pieces_11x_640_v1/
+!ML/runs/pieces_11x_640_v1/weights/
+!ML/runs/pieces_11x_640_v1/weights/best.pt
 ML/runs/runs.zip
 ML/engines/*/

@@ -18,8 +18,6 @@ export const styles = StyleSheet.create({
   /* Edit mode */
   editButtonActive:    { backgroundColor: '#2e7d32' },
   truncateButton:      { backgroundColor: '#4a1a1a' },
-  promoteButton:       { backgroundColor: '#1a3a4a' },
-  deleteButton:        { backgroundColor: '#4a1a2a' },
 
   /* Save / Export / Challenge buttons */
   saveButton:          { backgroundColor: '#1c3a2a' },
