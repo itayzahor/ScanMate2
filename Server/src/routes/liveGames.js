@@ -1,15 +1,32 @@
-// routes/liveGames.js — REST endpoints for reconnection / active game lookup
+/**
+ * @file routes/liveGames.js
+ * REST endpoints for live game state. All routes require authentication (applied via router.use(auth)).
+ * Real-time game play (moves, invites, draw offers, resign) is handled over Socket.IO in socket.js.
+ *
+ * Routes:
+ *   GET  /live-games/active    — Return the caller's current active or pending game
+ *   GET  /live-games/:id       — Fetch full game state by ID (for reconnection)
+ *   POST /live-games/abandon   — Abandon / cancel the caller's current game
+ */
 const { Router } = require('express');
-const auth = require('../middleware/auth');
+const auth     = require('../middleware/auth');
 const LiveGame = require('../models/liveGame');
 
 const router = Router();
 router.use(auth);
 
-/** Pending invites older than this are auto-expired */
+/** Pending invites older than this are treated as expired and auto-declined. */
 const INVITE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
-// Get current user's active or pending game (one at a time)
+/**
+ * GET /live-games/active
+ * Return the authenticated user's current active or pending game, if any.
+ *
+ * Returns: { ok, game: LiveGame | null }
+ *
+ * - Stale pending invites (older than INVITE_TTL_MS) are automatically declined
+ *   and null is returned, so the client never sees a zombie invite.
+ */
 router.get('/active', async (req, res, next) => {
   try {
     const userId = req.user.sub;
@@ -36,7 +53,14 @@ router.get('/active', async (req, res, next) => {
   }
 });
 
-// Get full game state by id (for reconnection)
+/**
+ * GET /live-games/:id
+ * Fetch the full state of a specific game by its MongoDB ID.
+ * Used by clients reconnecting to an in-progress game.
+ * Returns 403 if the requesting user is not a participant.
+ *
+ * Returns: { ok, game: LiveGame }
+ */
 router.get('/:id', async (req, res, next) => {
   try {
     const userId = req.user.sub;
@@ -60,7 +84,15 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
-// Abandon / cancel the user's current active or pending game
+/**
+ * POST /live-games/abandon
+ * Abandon or cancel the authenticated user's current active or pending game.
+ *
+ * - Pending game  → status set to 'declined' (invite withdrawn).
+ * - Active game   → treated as resignation; opponent wins and result is set.
+ *
+ * Returns: { ok: true, message }
+ */
 router.post('/abandon', async (req, res, next) => {
   try {
     const userId = req.user.sub;

@@ -225,6 +225,7 @@ class _GameSession:
     moves: list[str] = field(default_factory=list)          # confirmed SAN moves
     current_fen: str = DEFAULT_STARTING_FEN
     expected_turn: Optional[chess.Color] = None              # None = try both
+    initial_turn: Optional[chess.Color] = None               # color that played the first move
     pending_san: Optional[str] = None
     pending_idle: int = 0
     frame_count: int = 0
@@ -441,6 +442,8 @@ def _process_frame(game: _GameSession, image_bytes: bytes) -> dict:
                     move_san = game.pending_san
                     game.current_fen = res.fen
                     game.expected_turn = chess.BLACK if res.turn == chess.WHITE else chess.WHITE
+                    if game.initial_turn is None:
+                        game.initial_turn = res.turn
                     game.moves.append(move_san)
                     session.set_piece_squares(current_piece_squares)
                     game.pending_san = None
@@ -472,6 +475,8 @@ def _process_frame(game: _GameSession, image_bytes: bytes) -> dict:
                     move_san = candidate_san
                     game.current_fen = res.fen
                     game.expected_turn = chess.BLACK if res.turn == chess.WHITE else chess.WHITE
+                    if game.initial_turn is None:
+                        game.initial_turn = res.turn
                     game.moves.append(move_san)
                     session.set_piece_squares(current_piece_squares)
                     game.pending_san = None
@@ -522,6 +527,7 @@ class GameEndResponse(BaseModel):
     game_id: str
     moves: list[str]
     move_count: int
+    starting_fen: str  # Full FEN (board + side-to-move) the client should use to replay moves
 
 
 # --- Endpoints ---
@@ -615,11 +621,17 @@ async def end_game(game_id: str):
 
     print(f"[endGame] Completed game {game_id}: {len(game.moves)} moves detected")
 
+    board_fen = game.session.starting_fen or DEFAULT_STARTING_FEN
+    # Use the color that played the first detected move; fall back to white.
+    turn_char = 'b' if game.initial_turn == chess.BLACK else 'w'
+    full_starting_fen = f"{board_fen} {turn_char} - - 0 1"
+
     return GameEndResponse(
         status="completed",
         game_id=game_id,
         moves=list(game.moves),
         move_count=len(game.moves),
+        starting_fen=full_starting_fen,
     )
 
 

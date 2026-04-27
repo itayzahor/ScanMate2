@@ -34,11 +34,19 @@ foreach ($m in $models) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
     $url = "$BASE_URL/$($m.File)"
-    Write-Host "Downloading $($m.File) ..." -ForegroundColor Cyan
+    Write-Host "Downloading $($m.File) (~327 MB, may take a minute) ..." -ForegroundColor Cyan
     try {
-        Invoke-WebRequest -Uri $url -OutFile $destPath -UseBasicParsing
-        Write-Host "  Saved to $destPath" -ForegroundColor Green
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $wc = New-Object System.Net.WebClient
+        $wc.DownloadFile($url, $destPath)
+        $sizeMB = [math]::Round((Get-Item $destPath).Length / 1MB, 1)
+        if ($sizeMB -lt 10) {
+            Remove-Item $destPath -ErrorAction SilentlyContinue
+            throw "Downloaded file is only $sizeMB MB - likely got an HTML error page instead of the model."
+        }
+        Write-Host "  Saved to $destPath ($sizeMB MB)" -ForegroundColor Green
     } catch {
+        Remove-Item $destPath -ErrorAction SilentlyContinue
         Write-Host "  FAILED: $_" -ForegroundColor Red
         Write-Host "  Download manually from: $url" -ForegroundColor Red
     }

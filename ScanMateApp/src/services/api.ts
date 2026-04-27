@@ -109,6 +109,7 @@ export type GameEndResponse = {
   game_id: string;
   moves: string[];
   move_count: number;
+  starting_fen: string;
 };
 
 // --- Game Session Functions ---

@@ -1,4 +1,38 @@
-# Location: ML/debug_server.py
+# Location: ML/tests/debug_server.py
+"""Single-image debug server for the chess recognition pipeline.
+
+Runs a FastAPI server that accepts a single image upload, runs the full
+recognition pipeline on it, and returns the FEN string plus four debug
+visualizations as base64-encoded JPEGs.
+
+Usage
+-----
+Start the server (from ML/):
+
+    python tests/debug_server.py
+
+Then open http://localhost:8000 in a browser.
+Pick an image file and click "Recognize Board".
+
+The page displays:
+    01_corners_detected         — detected board corners (red dots)
+    02_rectified_with_grid      — perspective-corrected board with grid overlay
+    03_original_with_warped_grid — original frame with inverse-projected grid dots
+    04_combined_pieces_and_grid  — original frame with piece bounding boxes + grid
+
+The server also exposes a REST endpoint directly:
+
+    POST /recognize_board/
+        form-data: file=<image>
+        query:     session_id=<optional string>
+
+    Returns JSON:
+        status, fen, board_state, processing_time_seconds, diagnostics, debug_images
+"""
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import uvicorn
 from fastapi import FastAPI, UploadFile, File
@@ -37,7 +71,7 @@ async def get_debug_viewer():
     Serves the main HTML debug page.
     """
     try:
-        with open("debug_viewer.html", "r") as f:
+        with open(Path(__file__).resolve().parent / "debug_viewer.html", "r") as f:
             html_content = f.read()
         return HTMLResponse(content=html_content)
     except FileNotFoundError:

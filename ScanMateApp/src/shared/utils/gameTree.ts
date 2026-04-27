@@ -1,14 +1,40 @@
 import { Chess } from 'chess.js';
 import { normalizeFen } from './fen';
 
+/**
+ * Utilities for building, navigating, and mutating a chess game tree.
+ *
+ * A `GameTree` is a rose tree where each node holds one move (SAN + resulting FEN)
+ * and may have multiple children representing alternative continuations (variations).
+ * The tree is treated as immutable: all mutation helpers return a new `GameTree`.
+ *
+ * Typical usage:
+ * 1. Build a tree with `buildFromMoves` or start with an empty `{ startFen, root: [] }`.
+ * 2. Navigate with `getNodeAtPath`, `getFenAtPath`, etc.
+ * 3. Mutate with `addMove`, `truncateAfter`, `deleteVariation`, or `promoteVariation`.
+ */
+
 /* ── Types ── */
 
+/**
+ * A single node in the game tree, representing one half-move.
+ *
+ * @property san      - Standard Algebraic Notation of the move (e.g. `"Nf3"`).
+ * @property fen      - Full 6-field FEN of the position *after* this move.
+ * @property children - Alternative and main-line continuations from this position.
+ */
 export type MoveNode = {
   san: string;
   fen: string;
   children: MoveNode[];
 };
 
+/**
+ * The root container for an entire game (or position analysis) tree.
+ *
+ * @property startFen - Full 6-field FEN of the position before any move in `root`.
+ * @property root     - Top-level move nodes (children of the start position).
+ */
 export type GameTree = {
   startFen: string;
   root: MoveNode[];   // children of the start position
@@ -45,6 +71,14 @@ export const findMatchingSanForPlacement = (
 
 /* ── Build ── */
 
+/**
+ * Build a `GameTree` by replaying a sequence of SAN moves from `startFen`.
+ * The loop stops at the first move that chess.js cannot apply (illegal or unknown).
+ * The resulting tree has a single linear main line with no variations.
+ *
+ * @param startFen - The starting position (will be normalized).
+ * @param sans     - Array of SAN strings to replay in order.
+ */
 export const buildFromMoves = (startFen: string, sans: string[]): GameTree => {
   const fullFen = normalizeFen(startFen);
   const chess = new Chess(fullFen);
@@ -144,8 +178,14 @@ export const getLineLength = (tree: GameTree, path: number[]): number => {
 
 /* ── Mutations (all return new tree — immutable) ── */
 
+/** Deep-clone the entire tree via JSON serialization. Used before destructive mutations. */
 const cloneTree = (tree: GameTree): GameTree => JSON.parse(JSON.stringify(tree));
 
+/**
+ * Shallow-clone the path from the root down to (but not including) the target node,
+ * returning the children array of the node at `path` so it can be mutated safely.
+ * Returns `null` when the path is invalid.
+ */
 const clonePathChildren = (tree: GameTree, path: number[]): MoveNode[] | null => {
   const clonedRoot = [...tree.root];
   let children = clonedRoot;

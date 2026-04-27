@@ -1,4 +1,27 @@
-// socket.js — Socket.io initialisation + game event handlers
+/**
+ * @file socket.js
+ * Socket.IO initialisation and all real-time game event handlers.
+ *
+ * Events listened to (client → server):
+ *   game:invite          — Send a game invite to a friend
+ *   game:invite:respond  — Accept or decline an incoming invite
+ *   game:invite:cancel   — Cancel a pending outgoing invite
+ *   game:move            — Submit a move (from/to/promotion)
+ *   game:resign          — Resign the active game
+ *   game:draw:offer      — Offer a draw to the opponent
+ *   game:draw:respond    — Accept or decline a draw offer
+ *
+ * Events emitted (server → client):
+ *   game:invited         — Delivered to the recipient of a new invite
+ *   game:invite:expired  — Delivered when a stale pending invite is auto-declined
+ *   game:invite:cancelled — Delivered to the recipient when the inviter cancels
+ *   game:started         — Delivered to both players when an invite is accepted
+ *   game:declined        — Delivered to the inviter when the recipient declines
+ *   game:moved           — Delivered to both players after every legal move
+ *   game:over            — Delivered to both players when the game ends
+ *   game:draw:offered    — Delivered to the opponent when a draw is offered
+ *   game:draw:declined   — Delivered to the offerer when the opponent declines
+ */
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const { Chess } = require('chess.js');
@@ -12,12 +35,20 @@ const onlineUsers = new Map();
 /** Pending invites older than this are auto-expired */
 const INVITE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
+/**
+ * Initialize Socket.IO on the given HTTP server.
+ * Attaches JWT auth middleware and registers all game event handlers.
+ *
+ * @param {import('http').Server} httpServer - The Node.js HTTP server to attach Socket.IO to.
+ * @returns {import('socket.io').Server} The configured Socket.IO server instance.
+ */
 function initSocket(httpServer) {
   const io = new Server(httpServer, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
   });
 
   // ── Auth middleware ───────────────────────────────────────────────
+  // Verifies the JWT passed in socket.handshake.auth.token before allowing connection.
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('No token'));
@@ -36,7 +67,18 @@ function initSocket(httpServer) {
     onlineUsers.set(userId, socket.id);
     console.log(`⚡ socket connected  uid=${userId}  sid=${socket.id}`);
 
-    // ── Invite ─────────────────────────────────────────────────────
+    /**
+     * game:invite
+     * Send a game invite to a friend.
+     *
+     * Payload: { recipientId: string, color: 'white'|'black', startingFen?: string }
+     * Ack:     { ok, gameId? } | { ok: false, error }
+     *
+     * - Recipient must be an accepted friend.
+     * - Stale pending invites are auto-expired before the busy check.
+     * - Neither player may already have an active or pending game.
+     * - Emits `game:invited` to the recipient if they are online.
+     */
     socket.on('game:invite', async (data, ack) => {
       try {
         const { recipientId, color, startingFen } = data;
@@ -115,7 +157,17 @@ function initSocket(httpServer) {
       }
     });
 
-    // ── Respond to invite ──────────────────────────────────────────
+    /**
+     * game:invite:respond
+     * Accept or decline a pending game invite.
+     *
+     * Payload: { gameId: string, accept: boolean }
+     * Ack:     { ok } | { ok: false, error }
+     *
+     * - Only the non-inviting player may respond.
+     * - On accept: sets status to 'active', emits `game:started` to both players.
+     * - On decline: sets status to 'declined', emits `game:declined` to the inviter.
+     */
     socket.on('game:invite:respond', async (data, ack) => {
       try {
         const { gameId, accept } = data;
@@ -162,7 +214,15 @@ function initSocket(httpServer) {
       }
     });
 
-    // ── Cancel invite (inviter only) ───────────────────────────────
+    /**
+     * game:invite:cancel
+     * Cancel a pending outgoing invite. Only the inviter may cancel.
+     *
+     * Payload: { gameId: string }
+     * Ack:     { ok } | { ok: false, error }
+     *
+     * Sets status to 'declined' and emits `game:invite:cancelled` to the recipient.
+     */
     socket.on('game:invite:cancel', async (data, ack) => {
       try {
         const { gameId } = data;
@@ -191,7 +251,18 @@ function initSocket(httpServer) {
       }
     });
 
-    // ── Make a move ────────────────────────────────────────────────
+    /**
+     * game:move
+     * Submit a move for the active game.
+     *
+     * Payload: { gameId: string, from: string, to: string, promotion?: string }
+     * Ack:     { ok, san, fen, from, to, gameOver, result } | { ok: false, error }
+     *
+     * - Validates turn order and move legality via chess.js.
+     * - Any pending draw offer is voided on move.
+     * - Detects checkmate, stalemate, and draw; sets result and status accordingly.
+     * - Emits `game:moved` to both players.
+     */
     socket.on('game:move', async (data, ack) => {
       try {
         const { gameId, from, to, promotion } = data;
@@ -259,7 +330,15 @@ function initSocket(httpServer) {
       }
     });
 
-    // ── Resign ─────────────────────────────────────────────────────
+    /**
+     * game:resign
+     * Resign the active game. The opponent wins.
+     *
+     * Payload: { gameId: string }
+     * Ack:     { ok, result, reason } | { ok: false, error }
+     *
+     * Emits `game:over` to both players with reason 'resign'.
+     */
     socket.on('game:resign', async (data, ack) => {
       try {
         const { gameId } = data;
@@ -289,7 +368,16 @@ function initSocket(httpServer) {
       }
     });
 
-    // ── Draw offer ─────────────────────────────────────────────────
+    /**
+     * game:draw:offer
+     * Offer a draw to the opponent.
+     *
+     * Payload: { gameId: string }
+     * Ack:     { ok } | { ok: false, error }
+     *
+     * Sets `drawOfferedBy` on the game document and emits `game:draw:offered` to the opponent.
+     * The offer is automatically voided if either player makes a move.
+     */
     socket.on('game:draw:offer', async (data, ack) => {
       try {
         const { gameId } = data;
@@ -320,7 +408,17 @@ function initSocket(httpServer) {
       }
     });
 
-    // ── Draw respond ───────────────────────────────────────────────
+    /**
+     * game:draw:respond
+     * Accept or decline a pending draw offer.
+     * Only the player who did NOT make the offer may respond.
+     *
+     * Payload: { gameId: string, accept: boolean }
+     * Ack:     { ok } | { ok: false, error }
+     *
+     * - On accept: sets result '1/2-1/2', emits `game:over` to both players.
+     * - On decline: clears the offer, emits `game:draw:declined` to the offerer.
+     */
     socket.on('game:draw:respond', async (data, ack) => {
       try {
         const { gameId, accept } = data;
@@ -349,9 +447,7 @@ function initSocket(httpServer) {
           game.drawOfferedBy = null;
           await game.save();
 
-          const offererId = game.drawOfferedBy?.toString();
-          // drawOfferedBy is cleared above, use the fact that responder != offerer
-          // Notify the other player
+          // drawOfferedBy is already cleared; notify the offerer by finding the other player
           const isWhite = game.whitePlayer.toString() === userId;
           const opponentId = isWhite
             ? game.blackPlayer.toString()

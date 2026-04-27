@@ -1,4 +1,15 @@
-// routes/friends.js
+/**
+ * @file routes/friends.js
+ * Social graph routes. All routes require authentication (applied via router.use(auth)).
+ *
+ * Routes:
+ *   GET    /friends/search       — Search users by username substring
+ *   POST   /friends/request      — Send a friend request
+ *   POST   /friends/:id/accept   — Accept a pending friend request
+ *   POST   /friends/:id/reject   — Reject or cancel a pending friend request
+ *   DELETE /friends/:id          — Unfriend (remove an accepted friendship)
+ *   GET    /friends/             — Retrieve friends list, incoming requests, and outgoing requests
+ */
 const { Router } = require('express');
 const auth = require('../middleware/auth');
 const Friendship = require('../models/friendship');
@@ -7,7 +18,13 @@ const User = require('../models/user');
 const router = Router();
 router.use(auth);
 
-// --- Search users by name or email (partial match) ---
+/**
+ * GET /friends/search  (requires auth)
+ * Search for users by username (case-insensitive substring match).
+ *
+ * Query:   ?q=<string>  (minimum 2 characters)
+ * Returns: { ok, users: User[] }  — up to 10 results, excluding the requesting user
+ */
 router.get('/search', async (req, res, next) => {
   try {
     const { q } = req.query;
@@ -28,7 +45,17 @@ router.get('/search', async (req, res, next) => {
   }
 });
 
-// --- Send friend request ---
+/**
+ * POST /friends/request  (requires auth)
+ * Send a friend request to another user.
+ *
+ * Body:    { recipientId: string }
+ * Returns: { ok, friendship }
+ *
+ * - Returns 409 if already friends or a request is already pending.
+ * - If a previously rejected request exists (in either direction), it is
+ *   re-opened as a new pending request rather than creating a duplicate document.
+ */
 router.post('/request', async (req, res, next) => {
   try {
     const { recipientId } = req.body;
@@ -77,7 +104,13 @@ router.post('/request', async (req, res, next) => {
   }
 });
 
-// --- Accept a pending request ---
+/**
+ * POST /friends/:id/accept  (requires auth)
+ * Accept an incoming pending friend request.
+ * Only the recipient of the request is allowed to accept it.
+ *
+ * Returns: { ok, friendship }
+ */
 router.post('/:id/accept', async (req, res, next) => {
   try {
     const friendship = await Friendship.findById(req.params.id);
@@ -98,7 +131,14 @@ router.post('/:id/accept', async (req, res, next) => {
   }
 });
 
-// --- Reject / cancel a request ---
+/**
+ * POST /friends/:id/reject  (requires auth)
+ * Reject or cancel a pending friend request.
+ * Either the requester (cancel) or the recipient (decline) may call this.
+ * The Friendship document is deleted on rejection.
+ *
+ * Returns: { ok: true }
+ */
 router.post('/:id/reject', async (req, res, next) => {
   try {
     const friendship = await Friendship.findById(req.params.id);
@@ -120,7 +160,13 @@ router.post('/:id/reject', async (req, res, next) => {
   }
 });
 
-// --- Remove a friend ---
+/**
+ * DELETE /friends/:id  (requires auth)
+ * Remove an existing accepted friendship.
+ * Either party may unfriend the other.
+ *
+ * Returns: { ok: true }
+ */
 router.delete('/:id', async (req, res, next) => {
   try {
     const friendship = await Friendship.findById(req.params.id);
@@ -141,7 +187,17 @@ router.delete('/:id', async (req, res, next) => {
   }
 });
 
-// --- List my friends + pending requests ---
+/**
+ * GET /friends/  (requires auth)
+ * Retrieve the full social graph for the authenticated user.
+ *
+ * Returns: {
+ *   ok,
+ *   friends:  Friendship[],  // accepted in either direction (populated)
+ *   incoming: Friendship[],  // pending requests sent TO the user
+ *   outgoing: Friendship[],  // pending requests sent BY the user
+ * }
+ */
 router.get('/', async (req, res, next) => {
   try {
     const userId = req.user.sub;

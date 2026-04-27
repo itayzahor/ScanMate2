@@ -36,6 +36,7 @@ import { getBoardSize, HEADER_HEIGHT } from '../../shared/constants/layout';
 import { startGame, sendGameFrame, endGame, discardGame, checkBoardCorners } from '../../services/api';
 import { cropFrameToBoard } from '../../shared/utils/cropFrame';
 import type { GameSnapshot } from '../../shared/types/game';
+import RNFS from 'react-native-fs';
 import { STARTING_FEN, STARTING_BOARD_FEN, normalizeFen } from '../../shared/utils/fen';
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -177,8 +178,9 @@ export const ScanGame = ({ navigation, route }: ScanGameProps) => {
       setCaptureStateSafe('idle');
 
       if (navigateToReview && result.moves.length > 0) {
-        // Replay moves to build full snapshot history for GameReview
-        const snapshots = movesToSnapshots(result.moves, startingFenRef.current);
+        // Use the starting FEN the server actually tracked from (includes correct side-to-move)
+        const replayFen = result.starting_fen ?? startingFenRef.current;
+        const snapshots = movesToSnapshots(result.moves, replayFen);
         navigation.navigate('GameReview', { snapshots, moves: result.moves });
       } else if (navigateToReview) {
         Alert.alert('No moves detected', 'The server could not detect any moves in the recording.');
@@ -215,7 +217,10 @@ export const ScanGame = ({ navigation, route }: ScanGameProps) => {
           continue;
         }
         const snap = await cameraRef.current.takeSnapshot({ quality: 50 });
-        if (!snap.width || !snap.height) { continue; }
+        if (!snap.width || !snap.height) {
+          RNFS.unlink(snap.path).catch(() => {});
+          continue;
+        }
 
         const cropped = await cropFrameToBoard({
           photoPath: snap.path,
@@ -230,6 +235,9 @@ export const ScanGame = ({ navigation, route }: ScanGameProps) => {
 
         const detected = await checkBoardCorners(cropped);
         if (mountedRef.current) { setBoardDetected(detected); }
+        // Delete temp files — they accumulate quickly without cleanup
+        RNFS.unlink(snap.path).catch(() => {});
+        RNFS.unlink(cropped).catch(() => {});
       } catch {
         // Camera not ready or transient error
       }
@@ -289,17 +297,24 @@ export const ScanGame = ({ navigation, route }: ScanGameProps) => {
         boardOffsetX,
         overlayTopPx,
       });
+      // Original snapshot is no longer needed once it has been cropped
+      RNFS.unlink(photo.path).catch(() => {});
       const gameId = gameIdRef.current;
       if (!gameId || captureStateRef.current !== 'recording') {
+        RNFS.unlink(resizedPath).catch(() => {});
         return;
       }
 
       // Fire-and-forget upload — increment counter optimistically
       sentCountRef.current++;
       setFrameCount(sentCountRef.current);
-      sendGameFrame(gameId, resizedPath).catch(error => {
-        console.error('[ScanGame] Upload error', error);
-      });
+      sendGameFrame(gameId, resizedPath)
+        .catch(error => {
+          console.error('[ScanGame] Upload error', error);
+        })
+        .finally(() => {
+          RNFS.unlink(resizedPath).catch(() => {});
+        });
     } catch (error) {
       console.error('[ScanGame] Capture loop error', error);
     } finally {

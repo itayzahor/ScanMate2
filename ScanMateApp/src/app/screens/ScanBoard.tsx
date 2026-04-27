@@ -21,6 +21,7 @@ import {styles} from '../../ui/styles/ScanBoard.styles';
 import type {RootStackParamList} from '../../shared/types/navigation';
 import {ScreenHeader} from '../../ui/components/ScreenHeader';
 import {getBoardSize, HEADER_HEIGHT} from '../../shared/constants/layout';
+import RNFS from 'react-native-fs';
 import {cropFrameToBoard} from '../../shared/utils/cropFrame';
 import {checkBoardCorners} from '../../services/api';
 
@@ -90,7 +91,10 @@ export const ScanBoard = ({navigation}: ScanBoardProps) => {
         }
         // Low-quality snapshot for detection (saves bandwidth)
         const snap = await cameraRef.current.takeSnapshot({quality: 50});
-        if (!snap.width || !snap.height) { continue; }
+        if (!snap.width || !snap.height) {
+          RNFS.unlink(snap.path).catch(() => {});
+          continue;
+        }
 
         const cropped = await cropFrameToBoard({
           photoPath: snap.path,
@@ -105,6 +109,9 @@ export const ScanBoard = ({navigation}: ScanBoardProps) => {
 
         const detected = await checkBoardCorners(cropped);
         if (mountedRef.current) { setBoardDetected(detected); }
+        // Delete temp files — they accumulate quickly without cleanup
+        RNFS.unlink(snap.path).catch(() => {});
+        RNFS.unlink(cropped).catch(() => {});
       } catch {
         // Camera not ready or transient error — continue loop
       }

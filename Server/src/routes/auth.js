@@ -1,4 +1,14 @@
-// routes/auth.js
+/**
+ * @file routes/auth.js
+ * Authentication routes.
+ *
+ * Routes:
+ *   POST   /auth/google          — Verify a Google ID token, upsert the user, return a signed JWT
+ *   GET    /auth/me              — Return the authenticated user's profile
+ *   GET    /auth/username/check  — Check whether a username is available
+ *   PUT    /auth/username        — Set or update the authenticated user's username
+ *   DELETE /auth/account         — Permanently delete the authenticated user's account and all their data
+ */
 const { Router } = require('express');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
@@ -11,6 +21,17 @@ const auth = require('../middleware/auth');
 const router = Router();
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+/**
+ * POST /auth/google
+ * Exchange a Google ID token for an application JWT.
+ *
+ * Body:    { idToken: string }
+ * Returns: { ok, token, user: { id, email, name, picture, username } }
+ *
+ * - Verifies the token against GOOGLE_CLIENT_ID and rejects unverified emails.
+ * - Upserts the User document (creates on first login, updates profile fields on subsequent logins).
+ * - Issues a 30-day JWT signed with JWT_SECRET; `sub` is the MongoDB `_id` string.
+ */
 router.post('/google', async (req, res, next) => {
   try {
     const { idToken } = req.body;
@@ -51,9 +72,15 @@ router.post('/google', async (req, res, next) => {
   }
 });
 
+/**
+ * GET /auth/me  (requires auth)
+ * Return the authenticated user's profile.
+ *
+ * Returns: { ok, user: { id, email, name, picture, username } }
+ */
 router.get('/me', auth, async (req, res, next) => {
   try {
-    // req.user.sub came from jwt.sign(...) when you created the token
+    // req.user.sub is the MongoDB _id string set by the auth middleware
     const user = await User.findById(req.user.sub).lean();
 
     if (!user) {
@@ -75,7 +102,16 @@ router.get('/me', auth, async (req, res, next) => {
   }
 });
 
-// --- Check username availability ---
+/**
+ * GET /auth/username/check  (requires auth)
+ * Check whether a username string is available for the current user to claim.
+ *
+ * Query:   ?username=<string>
+ * Returns: { ok, available: boolean }
+ *
+ * - Validates format: 3–20 chars, letters/digits/underscores only.
+ * - A username already owned by the requesting user is considered available.
+ */
 router.get('/username/check', auth, async (req, res, next) => {
   try {
     const { username } = req.query;
@@ -93,7 +129,16 @@ router.get('/username/check', auth, async (req, res, next) => {
   }
 });
 
-// --- Set or update username ---
+/**
+ * PUT /auth/username  (requires auth)
+ * Set or update the authenticated user's username.
+ *
+ * Body:    { username: string }
+ * Returns: { ok, user: { id, email, name, picture, username } }
+ *
+ * - Validates format: 3–20 chars, letters/digits/underscores only.
+ * - Returns 409 if the username is already taken by another user.
+ */
 router.put('/username', auth, async (req, res, next) => {
   try {
     const { username } = req.body;
@@ -121,7 +166,18 @@ router.put('/username', auth, async (req, res, next) => {
   }
 });
 
-// --- Delete account ---
+/**
+ * DELETE /auth/account  (requires auth)
+ * Permanently delete the authenticated user's account and all associated data.
+ *
+ * Cascade deletes (in order):
+ *   1. All Friendship documents where the user is requester or recipient.
+ *   2. All Game documents owned by the user.
+ *   3. All LiveGame documents where the user is a participant.
+ *   4. The User document itself.
+ *
+ * Returns: { ok: true }
+ */
 router.delete('/account', auth, async (req, res, next) => {
   try {
     const userId = req.user.sub;

@@ -1,4 +1,13 @@
-// routes/games.js
+/**
+ * @file routes/games.js
+ * Saved game library routes. All routes require authentication (applied via router.use(auth)).
+ *
+ * Routes:
+ *   POST   /games/     — Save a new game record
+ *   GET    /games/     — List the user's games with offset pagination
+ *   GET    /games/:id  — Fetch a single game by MongoDB ID
+ *   DELETE /games/:id  — Delete a game by MongoDB ID
+ */
 const { Router } = require('express');
 const auth = require('../middleware/auth');
 const Game = require('../models/game');
@@ -8,7 +17,15 @@ const router = Router();
 // All routes require authentication
 router.use(auth);
 
-// POST / — save a game or position
+/**
+ * POST /games/
+ * Save a new game or position to the user's library.
+ *
+ * Body:    { title?, moves?, startingFen?, finalFen, result?, source?, opponentName? }
+ * Returns: { ok, game }
+ *
+ * `source` values: 'scan' | 'live' | 'import' | 'manual' (default: 'manual')
+ */
 router.post('/', async (req, res, next) => {
   try {
     const { title, moves, startingFen, finalFen, result, source, opponentName } = req.body;
@@ -30,7 +47,13 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-// GET / — list user's games (paginated)
+/**
+ * GET /games/
+ * List the authenticated user's games, newest first, with offset pagination.
+ *
+ * Query:   ?skip=<number>&limit=<number>  (limit capped at 100, defaults to 20)
+ * Returns: { ok, games: Game[], total: number }
+ */
 router.get('/', async (req, res, next) => {
   try {
     const skip = Math.max(0, parseInt(req.query.skip, 10) || 0);
@@ -51,7 +74,13 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-// GET /:id — get a single game
+/**
+ * GET /games/:id
+ * Fetch a single game by its MongoDB ID.
+ * Returns 403 when the game exists but belongs to a different user.
+ *
+ * Returns: { ok, game }
+ */
 router.get('/:id', async (req, res, next) => {
   try {
     const game = await Game.findById(req.params.id).lean();
@@ -67,7 +96,13 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
-// DELETE /:id — delete a game
+/**
+ * DELETE /games/:id
+ * Delete a game by its MongoDB ID.
+ * Returns 403 when the game exists but belongs to a different user.
+ *
+ * Returns: { ok: true }
+ */
 router.delete('/:id', async (req, res, next) => {
   try {
     const game = await Game.findById(req.params.id);
