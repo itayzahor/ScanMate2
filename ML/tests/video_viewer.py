@@ -498,7 +498,7 @@ def main() -> None:
             # === Detection frame: run the full pipeline ===
 
             # Gatekeeper check - show video always; only skip processing if frame is invalid
-            gatekeeper_result = validate_frame(img_resized)
+            gatekeeper_result = validate_frame(img_resized, blur_threshold=0)
             gatekeeper_valid = gatekeeper_result.is_valid
             issues_list = gatekeeper_result.issues or []
 
