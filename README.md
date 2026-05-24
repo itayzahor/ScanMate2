@@ -2,6 +2,8 @@
 
 A mobile app that scans a physical chess board with your phone camera, recognizes the position, tracks moves in real time, and provides Stockfish analysis.
 
+[ScanMate - Video Demonstration](https://www.youtube.com/watch?v=9tf8UBQ1B8c)
+
 ---
 
 ## Prerequisites
@@ -146,10 +148,3 @@ npx react-native start
 Then in a fourth terminal run `npx react-native run-android` or `npx react-native run-ios`.
 
 ---
-
-## Data sources
-
-The YOLO models were trained on these public datasets:
-
-- **Board corner detection** — https://universe.roboflow.com/chessboard-corner-detection-3b5bs/chessboard-detection-yqcnu/dataset/3
-- **Chess piece detection** — https://universe.roboflow.com/fhv/chess-pieces-2-6l8qq
