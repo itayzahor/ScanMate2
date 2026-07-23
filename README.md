@@ -2,7 +2,7 @@
 
 A mobile app that scans a physical chess board with your phone camera, recognizes the position, tracks moves in real time, and provides Stockfish analysis.
 
-[ScanMate - Video Demonstration](https://www.youtube.com/watch?v=9tf8UBQ1B8c)
+[![Watch the ScanMate Demo](https://img.youtube.com/vi/9tf8UBQ1B8c/maxresdefault.jpg)](https://www.youtube.com/watch?v=9tf8UBQ1B8c)
 
 ---
 
