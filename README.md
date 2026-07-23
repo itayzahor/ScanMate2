@@ -5,7 +5,7 @@ A mobile app that scans a physical chess board with your phone camera, recognize
 <br>
 
 <p align="center">
-  <img src="scanmate-demo.gif" alt="ScanMate capturing a live chess move" width="600">
+  <img src="ScanMate.gif" alt="ScanMate capturing a live chess move" width="600">
   <br><br>
   <strong>🎥 <a href="https://www.youtube.com/watch?v=9tf8UBQ1B8c">Watch the full Video Demonstration</a></strong>
 </p>
