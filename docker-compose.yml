@@ -1,0 +1,59 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  node_backend:
+    build:
+      context: ./Server
+      dockerfile: ../docker/node_backend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    env_file:
+      - ./Server/.env
+    environment:
+      # Overrides the value in .env so the container reaches the mongo service
+      - MONGODB_URI=mongodb://mongo:27017/scanmate
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  fastapi_backend:
+    build:
+      context: ./ML
+      dockerfile: ../docker/fastapi_backend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    # Mount model weights from the host so the image stays lean and weights
+    # can be updated without rebuilding. Run download_models.ps1 first.
+    volumes:
+      - ./ML/runs:/app/runs
+    environment:
+      - STOCKFISH_PATH=/usr/bin/stockfish
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  mongo_data:

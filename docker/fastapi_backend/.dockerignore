@@ -1,0 +1,9 @@
+data/
+runs/incoming_frames/
+runs/video_viewer/
+engines/stockfish/src/
+**/__pycache__/
+**/*.pyc
+**/.ipynb_checkpoints/
+*.ipynb
+tests/

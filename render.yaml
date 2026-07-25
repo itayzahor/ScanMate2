@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: scanmate-api
+    runtime: docker
+    dockerfilePath: docker/node_backend/Dockerfile
+    dockerContext: Server
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: MONGODB_URI
+        sync: false       # paste your Atlas connection string in the Render dashboard
+      - key: JWT_SECRET
+        sync: false       # generate with: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+      - key: GOOGLE_CLIENT_ID
+        sync: false       # your Google OAuth client ID

@@ -111,6 +111,19 @@ app = FastAPI(title="Chess Recognition Server", lifespan=_lifespan)
 
 
 # ---------------------------------------------------------------------------
+# GET /health
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+async def health() -> dict:
+    """Liveness probe used by Docker and cloud platforms."""
+    return {
+        "status": "ok",
+        "engine": _engine is not None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # POST /recognize_position/ — stateless single-image recognition
 # ---------------------------------------------------------------------------
 
@@ -777,4 +790,4 @@ if __name__ == "__main__":
         _DUMP_GAME_FRAMES_DIR.mkdir(parents=True, exist_ok=True)
         logger.info("Game frame dumping enabled: %s", _DUMP_GAME_FRAMES_DIR)
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("ML_PORT", "8000")), log_level="info")
